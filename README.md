@@ -110,7 +110,7 @@ For the best experience, use models with strong instruction-following and reason
 
 ## Install & Support
 
-**Install Link:** [GitHub Repository](https://www.youtube.com/watch?v=Q-iaz9mBFrA)  
+**Install video:** [youtube Video](https://www.youtube.com/watch?v=Q-iaz9mBFrA)  
 **Discord Community:** [https://discord.gg/gnbFRu9g](https://discord.gg/HkxgN8r3jx)
 
 *(If you're coming from V4 or V5, your profiles will auto-migrate gracefully. Let me know in the Discord if you run into anything weird!)*
