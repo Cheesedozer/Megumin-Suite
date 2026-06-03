@@ -37,7 +37,18 @@ const Popup                 = STPopup.Popup;
 const POPUP_TYPE            = STPopup.POPUP_TYPE;
 
 const extensionName = "Megumin-Suite";
-const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
+// Derive the actual installed folder from this module's own URL so asset fetches
+// (example.html, images) resolve no matter what the extension folder is named — e.g. a
+// forked/renamed install like "Megumin-Suite-Cheesedozer-Edition". Falls back to the
+// third-party path built from extensionName if derivation fails. NOTE: extensionName is
+// still used as the settings-storage key, so it must stay constant regardless of folder.
+const extensionFolderPath = (() => {
+    try {
+        return new URL('.', import.meta.url).pathname.replace(/^\//, '').replace(/\/$/, '');
+    } catch {
+        return `scripts/extensions/third-party/${extensionName}`;
+    }
+})();
 const TARGET_PRESET_NAME = "Megumin Engine";
 
 // -------------------------------------------------------------
