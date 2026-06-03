@@ -1361,6 +1361,7 @@ function renderBlocks(c) {
         "summary": "Keeps a running story digest that the AI updates each turn — helps it remember names, events, and details over long sessions.",
         "cyoa": "Choose-Your-Own-Adventure panel with 4 suggested actions for you to pick from each turn.",
         "mvu": "Add MVU Compatibility still in test read more here: <a href='https://github.com/KritBlade/MVU_Game_Maker' target='_blank' style='color: var(--gold); text-decoration: underline;'>https://github.com/KritBlade/MVU_Game_Maker</a>",
+        "fatbody": "Injects Fatbody D&D Framework mechanics (dice rolls, combat, saving throws, XP, loot, leveling). Works alongside the Fatbody extension — enable Suite Mode there so it doesn't overwrite this preset's main prompt. Can be used together with MVU.",
         "npc_inner_chatter": "Reveal NPC private thoughts the PC never hears — crushes, resentment, scheming, anxiety. This feeds future NPC behavior.",
         "npc_inner_chatter_v2": "A simpler version of NPC Inner Chatter. use less input token."
     };
@@ -4315,6 +4316,14 @@ function buildBaseDict() {
         dict["[[MVU]]"] = wordCountStr ? `{main response — maximum ${wordCountStr} words}` : `{main response}`;
     }
 
+    // Fatbody D&D Logic — injects the Fatbody DnD Framework mechanics (dice, combat, XP, loot).
+    // Independent of MVU; both can be enabled at once.
+    if (localProfile.blocks.includes("fatbody")) {
+        dict["[[FATBODY]]"] = hardcodedLogic.blocks.find(b => b.id === "fatbody").content;
+    } else {
+        dict["[[FATBODY]]"] = "";
+    }
+
     // 3. ENGINE OVERRIDES (The "Superior" Layer)
     // This part runs last so it can overwrite standard Stage choices
     const allAvailableModes = [...hardcodedLogic.modes, ...(extension_settings[extensionName].customModes || [])];
@@ -4347,6 +4356,7 @@ function buildBaseDict() {
             { key: "summary", trigger: "[[summary]]", condition: localProfile.blocks.includes("summary") },
             { key: "cyoa", trigger: "[[cyoa]]", condition: localProfile.blocks.includes("cyoa") },
             { key: "mvu", trigger: "[[MVU]]", condition: localProfile.blocks.includes("mvu") },
+            { key: "fatbody", trigger: "[[FATBODY]]", condition: localProfile.blocks.includes("fatbody") },
             { key: "death", trigger: "[[death]]", condition: localProfile.addons.includes("death") },
             { key: "combat", trigger: "[[combat]]", condition: localProfile.addons.includes("combat") },
             { key: "direct", trigger: "[[Direct]]", condition: localProfile.addons.includes("direct") },
@@ -4773,7 +4783,7 @@ async function handlePromptInjection(data, type) {
             });
 
             // Cleanup unused tags (Removes the tag AND the line break)
-            ["[[long-Memory]]", "[[Short-memory]]", "[[prompt1]]", "[[prompt2]]", "[[prompt3]]", "[[prompt4]]", "[[prompt5]]", "[[prompt6]]", "[prompt1]", "[prompt2]", "[prompt3]", "[prompt4]", "[prompt5]", "[prompt6]", "[[AI1]]", "[[AI2]]", "[[main]]", "[[OOC]]", "[[control]]", "[[aiprompt]]", "[[death]]", "[[combat]]", "[[Direct]]", "[[DN]]", "[[COLOR]]", "[[infoblock]]", "[[summary]]", "[[cyoa]]", "[[COT]]", "[[prefill]]", "[[order]]", "[[Language]]", "[[pronouns]]", "[[banlist]]", "[[count]]", "[[MVU]]", "[[img1]]", "[[img2]]", "[[storyplan]]", "[[storytracker]]", "[[DNRATIO]]", "[[THINK]]", "[[onomato]]", "[[npc_events]]", "[[cyoa2]]", "[[infoblock2]]", "[[summary2]]", "[[storytracker2]]", "[[npc_inner_chatter]]", "[[npc_inner_chatter2]]", "[[npc_dossier]]", "[[npc_dossier2]]", "[[npc list]]"].forEach(tr => {
+            ["[[long-Memory]]", "[[Short-memory]]", "[[prompt1]]", "[[prompt2]]", "[[prompt3]]", "[[prompt4]]", "[[prompt5]]", "[[prompt6]]", "[prompt1]", "[prompt2]", "[prompt3]", "[prompt4]", "[prompt5]", "[prompt6]", "[[AI1]]", "[[AI2]]", "[[main]]", "[[OOC]]", "[[control]]", "[[aiprompt]]", "[[death]]", "[[combat]]", "[[Direct]]", "[[DN]]", "[[COLOR]]", "[[infoblock]]", "[[summary]]", "[[cyoa]]", "[[COT]]", "[[prefill]]", "[[order]]", "[[Language]]", "[[pronouns]]", "[[banlist]]", "[[count]]", "[[MVU]]", "[[FATBODY]]", "[[img1]]", "[[img2]]", "[[storyplan]]", "[[storytracker]]", "[[DNRATIO]]", "[[THINK]]", "[[onomato]]", "[[npc_events]]", "[[cyoa2]]", "[[infoblock2]]", "[[summary2]]", "[[storytracker2]]", "[[npc_inner_chatter]]", "[[npc_inner_chatter2]]", "[[npc_dossier]]", "[[npc_dossier2]]", "[[npc list]]"].forEach(tr => {
                 if (msg.content.includes(tr)) {
                     msg.content = msg.content.replace(new RegExp(`^[ \\t]*${escapeRegex(tr)}[ \\t]*\\r?\\n?`, 'gm'), "");
                     msg.content = msg.content.replace(new RegExp(escapeRegex(tr), 'g'), ""); // Catch-all for inline tags
@@ -5042,7 +5052,7 @@ function renderDevMode(view = "landing", selectedModeId = null, passedModeData =
             modeData.p4 = $("#dev_edit_p4").val(); modeData.p5 = $("#dev_edit_p5").val(); modeData.p6 = $("#dev_edit_p6").val();
 
             // Loop through all override fields
-            const fields = ["cot", "prefill", "cyoa", "info", "summary", "death", "combat", "direct", "dn", "dialogueColor", "mvu", "storytracker", "think", "language", "pronouns", "count", "dnratio", "onomato", "banlist"];
+            const fields = ["cot", "prefill", "cyoa", "info", "summary", "death", "combat", "direct", "dn", "dialogueColor", "mvu", "fatbody", "storytracker", "think", "language", "pronouns", "count", "dnratio", "onomato", "banlist"];
             fields.forEach(f => {
                 if ($(`#dev_edit_${f}`).length) modeData[f] = $(`#dev_edit_${f}`).val();
             });
@@ -5155,6 +5165,7 @@ function renderDevMode(view = "landing", selectedModeId = null, passedModeData =
         flow.append(createOverrideBlock("[[Direct]]", "direct", modeData.direct, [{ label: "No Change", value: "" }, { label: "Default", value: getAddon("direct") }]));
         flow.append(createOverrideBlock("[[DN]]", "dn", modeData.dn, [{ label: "No Change", value: "" }, { label: "Default", value: getAddon("dn") }]));
         flow.append(createOverrideBlock("[[COLOR]]", "dialogueColor", modeData.dialogueColor, [{ label: "No Change", value: "" }, { label: "Default", value: getAddon("color") }])); flow.append(createOverrideBlock("[[MVU]]", "mvu", modeData.mvu, [{ label: "No Change", value: "" }, { label: "Default", value: getBlock("mvu") }]));
+        flow.append(createOverrideBlock("[[FATBODY]]", "fatbody", modeData.fatbody, [{ label: "No Change", value: "" }, { label: "Default", value: getBlock("fatbody") }]));
         flow.append(createOverrideBlock("[[storytracker]]", "storytracker", modeData.storytracker, [{ label: "No Change", value: "" }, { label: "Default", value: "# at the very end of the response put this block:\n<Story_Tracker>\narc: The Arc that is now active.\nchapter: The chapter that is now active.\nEpisode: The episode that is now active.\nSecrets: Any secret that the user/{{user}} doesn't know.\n</Story_Tracker>" }]));
 
         // Section 3: Global Variables
