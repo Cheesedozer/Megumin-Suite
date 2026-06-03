@@ -1,11 +1,40 @@
 /* eslint-disable no-undef */
-import { extension_settings, getContext } from "../../../extensions.js";
-import { saveSettingsDebounced, generateQuietPrompt, event_types, eventSource, substituteParams, saveChat, reloadCurrentChat, addOneMessage, getRequestHeaders, appendMediaToMessage } from "../../../../script.js";
-import { saveBase64AsFile } from "../../../utils.js";
-import { humanizedDateTime } from "../../../RossAscends-mods.js";
-import { Popup, POPUP_TYPE } from "../../../popup.js";
+// Namespace imports never throw on a missing export (a missing name is simply `undefined`),
+// unlike named imports which abort the whole module — and a single removed/renamed SillyTavern
+// export must not make this extension silently fail to load. Bindings below prefer the stable
+// getContext() API and fall back to the static module export.
+import * as STExtensions from "../../../extensions.js";
+import * as STScript from "../../../../script.js";
+import * as STUtils from "../../../utils.js";
+import * as STRoss from "../../../RossAscends-mods.js";
+import * as STPopup from "../../../popup.js";
 import { hardcodedLogic } from "./data/database.js";
 import { KAZUMA_PLACEHOLDERS, RESOLUTIONS } from "./data/image_data.js";
+
+const getContext = STExtensions.getContext;
+const extension_settings = STExtensions.extension_settings;
+
+// Resolve the stable context surface once; every binding still has a static fallback in case
+// getContext() isn't ready at module-eval time.
+const _ctx = (() => {
+    try { return getContext?.() ?? globalThis.SillyTavern?.getContext?.() ?? {}; }
+    catch { return {}; }
+})();
+
+const saveSettingsDebounced = _ctx.saveSettingsDebounced ?? STScript.saveSettingsDebounced;
+const generateQuietPrompt   = _ctx.generateQuietPrompt   ?? STScript.generateQuietPrompt;
+const event_types           = _ctx.eventTypes            ?? STScript.event_types;        // ctx prop is camelCase
+const eventSource           = _ctx.eventSource           ?? STScript.eventSource;
+const substituteParams      = _ctx.substituteParams      ?? STScript.substituteParams;
+const saveChat              = _ctx.saveChat ?? STScript.saveChatConditional ?? STScript.saveChat; // ST no longer exports `saveChat`
+const reloadCurrentChat     = _ctx.reloadCurrentChat     ?? STScript.reloadCurrentChat;
+const addOneMessage         = _ctx.addOneMessage         ?? STScript.addOneMessage;
+const getRequestHeaders     = _ctx.getRequestHeaders     ?? STScript.getRequestHeaders;
+const appendMediaToMessage  = _ctx.appendMediaToMessage  ?? STScript.appendMediaToMessage;
+const saveBase64AsFile      = _ctx.saveBase64AsFile      ?? STUtils.saveBase64AsFile;
+const humanizedDateTime     = STRoss.humanizedDateTime;
+const Popup                 = STPopup.Popup;
+const POPUP_TYPE            = STPopup.POPUP_TYPE;
 
 const extensionName = "Megumin-Suite";
 const extensionFolderPath = `scripts/extensions/third-party/${extensionName}`;
