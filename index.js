@@ -23,6 +23,7 @@ const _ctx = (() => {
 
 const saveSettingsDebounced = _ctx.saveSettingsDebounced ?? STScript.saveSettingsDebounced;
 const generateQuietPrompt   = _ctx.generateQuietPrompt   ?? STScript.generateQuietPrompt;
+const generateRaw           = _ctx.generateRaw           ?? STScript.generateRaw;
 const event_types           = _ctx.eventTypes            ?? STScript.event_types;        // ctx prop is camelCase
 const eventSource           = _ctx.eventSource           ?? STScript.eventSource;
 const substituteParams      = _ctx.substituteParams      ?? STScript.substituteParams;
@@ -66,6 +67,7 @@ let activeStoryPlanRequest = null;
 let activeEvolvingArcRequest = null; // { mode: 'first'|'next', prevArc, chatText }
 let evolvingLastProcessedLen = -1;   // dedupe guard for Evolving auto-advance
 let suiteUserGenActive = false;      // true while a user-facing (non-quiet) generation is running
+let activeRawArcGen = false;         // true while an isolated generateRaw arc request is in flight
 let activeNpcImages = [];
 let isDevEngineDirty = false;
 
@@ -1995,6 +1997,52 @@ async function generateStoryPlanLogic(chatText) {
 }
 
 async function generateEvolvingArcLogic(mode, prevArc, chatText) {
+    // Build the arc-generation prompt directly so we can use generateRaw, which runs an
+    // ISOLATED request (bypassAll + its own AbortController). Unlike generateQuietPrompt,
+    // it never touches SillyTavern's single shared Generate() pipeline / abort controller,
+    // so an auto-advance can never collide with — and blank out — the user's own reply.
+    const charLore = typeof substituteParams === 'function' ? substituteParams('{{description}}') : "No character description found.";
+    const userPersona = typeof substituteParams === 'function' ? substituteParams('{{persona}}') : "No user persona found.";
+
+    const systemPrompt =
+        `Role: You are an expert Story Architect specializing in single, focused narrative arcs.\n\n` +
+        `<lore>\n${charLore}\n</lore>\n\n` +
+        `User Persona ({{user}}):\n<user_persona>\n${userPersona}\n</user_persona>\n\n` +
+        `<Story>\n${chatText}\n</Story>` +
+        (mode === 'next' ? `\n\n<Previous_Arc>\n${prevArc || ""}\n</Previous_Arc>` : ``);
+
+    const userPrompt = (mode === 'next')
+        ? `Task: The Previous Arc (provided above) has just been COMPLETED. Design the ONE next Arc that connects directly to it and carries the story forward.\n\nStrict Rules & Constraints:\n1. CONTINUITY FIRST: The new arc must build on the consequences, fallout, and unresolved threads of the Previous Arc and the recent story. It is a continuation, NOT a reset or a brand-new unrelated plot.\n2. Produce EXACTLY ONE arc — a single focused dramatic unit with a clear new central tension and an implied resolution condition. No lists, no menus.\n3. DO NOT write the immediate next scene or any dialogue. Describe the arc's shape: its central conflict, the stakes, 2-4 escalating beats/chapters, and what "resolved" looks like.\n4. Use Narrative Structure, NOT Timeframes. Frame everything as a future Arc, Chapter, or Episode beat.\n5. Zero Agency Theft: You are STRICTLY FORBIDDEN from writing dialogue, actions, thoughts, or emotional reactions for {{user}}. Never describe what {{user}} does, feels, or says, and never predict or suggest what {{user}} will do next.\n\nFormat & Style: Give the new arc a short title, then describe it in punchy, plot-focused prose/beats. Output ONLY the arc, wrapped in <plot></plot> tags.`
+        : `Task: Design ONE single, focused current Arc for the story going forward, grounded in the story so far.\n\nStrict Rules & Constraints:\n1. Produce EXACTLY ONE arc — not a list, not a menu of possibilities. A tight, self-contained dramatic unit with a clear central tension and an implied resolution condition.\n2. DO NOT write the immediate next scene or any dialogue. Describe the arc's shape: its central conflict, the stakes, 2-4 escalating beats/chapters, and what "resolved" looks like.\n3. Use Narrative Structure, NOT Timeframes. Frame everything as a future Arc, Chapter, or Episode beat.\n4. Zero Agency Theft: You are STRICTLY FORBIDDEN from writing dialogue, actions, thoughts, or emotional reactions for {{user}}. Never describe what {{user}} does, feels, or says, and never predict or suggest what {{user}} will do next.\n5. Keep it focused and actionable — this arc becomes the active throughline the story follows until its goals are fully resolved.\n\nFormat & Style: Give the arc a short title, then describe it in punchy, plot-focused prose/beats. Output ONLY the arc, wrapped in <plot></plot> tags.`;
+
+    // Preferred path: isolated generateRaw request (no shared generation lock).
+    if (typeof generateRaw === 'function') {
+        const controller = new AbortController();
+        activeRawArcGen = true;
+        let result;
+        try {
+            result = await generateRaw({ prompt: userPrompt, systemPrompt, bypassAll: true, signal: controller.signal });
+        } finally {
+            activeRawArcGen = false;
+        }
+        let text = typeof result === 'string'
+            ? result
+            : (result?.choices?.[0]?.message?.content ?? result?.choices?.[0]?.text ?? result?.content ?? result?.message?.content ?? "");
+        if (!text && result && typeof result !== 'string') {
+            text = result?.reasoning ?? result?.message?.reasoning ?? result?.choices?.[0]?.message?.reasoning ?? "";
+        }
+        // Normalize so the existing <plot>…</plot> extractors at the call sites always match:
+        // strip any reasoning block, and wrap bare output in <plot> tags if the model omitted them.
+        text = (text || "").replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+        if (text && !/<plot>[\s\S]*?<\/plot>/i.test(text)) {
+            text = `<plot>\n${text}\n</plot>`;
+        }
+        return text;
+    }
+
+    // Fallback (older SillyTavern without generateRaw): legacy quiet-prompt path via the
+    // CHAT_COMPLETION_PROMPT_READY interceptor. Shares the main pipeline, so it is gated
+    // behind runWhenUserIdle by the callers.
     activeEvolvingArcRequest = { mode, prevArc: prevArc || "", chatText };
     try {
         return await generateQuietPrompt({ prompt: "___PS_EVOLVING_ARC___" });
@@ -4887,6 +4935,9 @@ function escapeRegex(string) { return string.replace(/[.*+?^${}()|[\]\\]/g, '\\$
 async function handlePromptInjection(data, type) {
     const messages = data?.messages || data?.chat || (Array.isArray(data) ? data : null);
     if (!messages || !Array.isArray(messages)) return;
+    // Leave isolated generateRaw arc requests completely untouched — they carry their own
+    // self-contained prompt and must not receive any Megumin RP-block injection.
+    if (activeRawArcGen) return;
     const disablePrefill = localProfile && localProfile.disableUtilityPrefill === true;
 
     // --- INJECT STORY PLANNER PROMPT ---
