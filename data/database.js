@@ -780,6 +780,8 @@ Level 7 — 23,000 XP
 Level 8 — 34,000 XP
 Level 9 — 48,000 XP
 Level 10 — 64,000 XP
+
+Track XP as a running total across outputs.
 </xp_system>
 
 <level_up_protocol>
