@@ -65,6 +65,7 @@ let activeImageGenRequest = null;
 let activeStoryPlanRequest = null;
 let activeEvolvingArcRequest = null; // { mode: 'first'|'next', prevArc, chatText }
 let evolvingLastProcessedLen = -1;   // dedupe guard for Evolving auto-advance
+let suiteUserGenActive = false;      // true while a user-facing (non-quiet) generation is running
 let activeNpcImages = [];
 let isDevEngineDirty = false;
 
@@ -2000,6 +2001,20 @@ async function generateEvolvingArcLogic(mode, prevArc, chatText) {
     } finally {
         activeEvolvingArcRequest = null;
     }
+}
+
+// Defers a background generation until the user's own generation has finished.
+// SillyTavern allows only one generation at a time, so starting a background
+// quiet-prompt mid-stream aborts the user's reply (a blank/1-token message).
+// We wait an initial beat (let the chat save), then poll until idle, with a
+// ~30s safety cap so the task always eventually runs.
+function runWhenUserIdle(fn) {
+    let attempt = 0;
+    const step = () => {
+        if (suiteUserGenActive && attempt++ < 60) { setTimeout(step, 500); return; }
+        fn();
+    };
+    setTimeout(step, 1200);
 }
 
 function renderBanList(c) {
@@ -5570,10 +5585,24 @@ jQuery(async () => {
                 discoverDefaultImages();
             });
             eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, handlePromptInjection);
+
+            // Track user-facing generation state so background generations (story plan /
+            // evolving arc / etc.) never start mid-stream and abort the user's reply.
+            const onSuiteGenStart = (type, _opts, dryRun) => {
+                if (dryRun) return;
+                if (type === 'quiet') return; // our own background quiet-prompts
+                suiteUserGenActive = true;
+            };
+            const onSuiteGenEnd = () => { suiteUserGenActive = false; };
+            if (event_types.GENERATION_STARTED) eventSource.on(event_types.GENERATION_STARTED, onSuiteGenStart);
+            if (event_types.GENERATION_ENDED) eventSource.on(event_types.GENERATION_ENDED, onSuiteGenEnd);
+            if (event_types.GENERATION_STOPPED) eventSource.on(event_types.GENERATION_STOPPED, onSuiteGenEnd);
+
             eventSource.on(event_types.CHAT_CHANGED, () => {
                 initProfile(); updateCharacterDisplay();
                 if ($("#prompt-slot-modal-overlay").is(":visible")) switchTab(currentTab);
                 updateMemoryVisuals();
+                suiteUserGenActive = false;
                 evolvingLastProcessedLen = -1; // reset Evolving auto-advance guard on chat switch
             });
             // Background Vectorization triggers for Semantic Mode
@@ -5593,7 +5622,7 @@ jQuery(async () => {
                     const aiMsgCount = chat.filter(m => !m.is_user && !m.is_system).length;
                     if (aiMsgCount > 0 && aiMsgCount % sp.autoFreq === 0) {
                         toastr.info("Auto-Generating new Story Plan...", "Megumin Suite");
-                        setTimeout(async () => {
+                        runWhenUserIdle(async () => {
                             const chatText = getCleanedChatHistory();
                             if (chatText.length < 100) return;
                             try {
@@ -5606,7 +5635,7 @@ jQuery(async () => {
                                     toastr.success("Story Plan Updated silently!");
                                 }
                             } catch (e) { console.error("Story Plan auto-gen failed", e); }
-                        }, 2000); // Small delay to let chat save first
+                        }); // deferred until the user's own generation finishes
                     }
                 }
 
@@ -5626,7 +5655,7 @@ jQuery(async () => {
                         if (isComplete && sp.currentArc && sp.currentArc.trim() !== "") {
                             evolvingLastProcessedLen = lastIdx; // claim it before async work
                             toastr.info("Arc complete — generating the next connecting arc...", "Megumin Suite");
-                            setTimeout(async () => {
+                            runWhenUserIdle(async () => {
                                 const chatText = getCleanedChatHistory();
                                 if (chatText.length < 100) return;
                                 const prevArc = sp.currentArc;
@@ -5647,7 +5676,7 @@ jQuery(async () => {
                                         toastr.warning("Next arc generation failed to format. Use 'Advance to Next Arc' manually.");
                                     }
                                 } catch (e) { console.error("[Megumin Suite] Evolving arc auto-advance failed", e); }
-                            }, 2000);
+                            });
                         } else {
                             evolvingLastProcessedLen = lastIdx; // mark seen even if not complete
                         }
