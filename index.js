@@ -63,6 +63,8 @@ let activeMemorySummarizationRequest = null;
 let activeBanListChat = null;
 let activeImageGenRequest = null;
 let activeStoryPlanRequest = null;
+let activeEvolvingArcRequest = null; // { mode: 'first'|'next', prevArc, chatText }
+let evolvingLastProcessedLen = -1;   // dedupe guard for Evolving auto-advance
 let activeNpcImages = [];
 let isDevEngineDirty = false;
 
@@ -147,7 +149,13 @@ function initProfile() {
             backend: "direct",
             triggerMode: "manual",
             autoFreq: 10,
-            currentPlan: ""
+            currentPlan: "",
+            // --- Evolving Narrative Mode ---
+            mode: "classic",        // "classic" | "evolving"
+            currentArc: "",         // the single active arc text (evolving)
+            arcChain: [],           // [{ n, text, completedAt }] completed arcs, oldest first
+            arcNumber: 0,           // counter; 0 = first arc not yet completed
+            autoAdvance: true       // auto-generate next arc on Status: Complete
         },
         imageGen: {
             enabled: false,
@@ -217,6 +225,15 @@ function initProfile() {
     if (!localProfile.toggles) localProfile.toggles = defaults.toggles;
     if (!localProfile.imageGen) localProfile.imageGen = defaults.imageGen;
     if (!localProfile.storyPlan) localProfile.storyPlan = defaults.storyPlan;
+    // MIGRATION: backfill Evolving Narrative fields on existing profiles
+    {
+        const _sp = localProfile.storyPlan;
+        if (_sp.mode === undefined) _sp.mode = "classic";
+        if (_sp.currentArc === undefined) _sp.currentArc = "";
+        if (!Array.isArray(_sp.arcChain)) _sp.arcChain = [];
+        if (_sp.arcNumber === undefined) _sp.arcNumber = 0;
+        if (_sp.autoAdvance === undefined) _sp.autoAdvance = true;
+    }
     if (!localProfile.memoryCore) localProfile.memoryCore = defaults.memoryCore;
     if (!localProfile.dnRatio) localProfile.dnRatio = defaults.dnRatio;
     if (!localProfile.onomatopoeia) localProfile.onomatopoeia = defaults.onomatopoeia;
@@ -1703,6 +1720,19 @@ function renderStoryPlanner(c) {
 
         <div id="sp_main_content" style="display: ${sp.enabled ? 'block' : 'none'};">
             <div class="mtab-panel">
+                <div class="mtab-panel-title gold"><i class="fa-solid fa-shuffle"></i> Planner Mode</div>
+                <div class="mtab-setting-row">
+                    <div class="set-info">
+                        <div class="set-label">Mode</div>
+                        <div class="set-desc">Classic brainstorms many possible arcs; Evolving Narrative follows one focused arc and auto-advances to the next connecting arc when it completes.</div>
+                    </div>
+                    <select id="sp_mode" class="ps-modern-input" style="width: 220px; cursor: pointer;">
+                        <option value="classic" ${sp.mode !== 'evolving' ? 'selected' : ''}>Classic (multiple arcs)</option>
+                        <option value="evolving" ${sp.mode === 'evolving' ? 'selected' : ''}>Evolving Narrative</option>
+                    </select>
+                </div>
+            </div>
+            <div class="mtab-panel">
                 <div class="mtab-panel-title gold"><i class="fa-solid fa-gears"></i> Engine Settings</div>
                 <div class="mtab-setting-row">
                     <div class="set-info"><div class="set-label">Generation Backend</div></div>
@@ -1726,19 +1756,53 @@ function renderStoryPlanner(c) {
                 </div>
             </div>
 
-            <div class="mtab-panel">
-                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
-                    <div class="mtab-panel-title gold" style="margin-bottom:0;"><i class="fa-solid fa-book-open"></i> Current Story Plan</div>
-                    <button id="sp_btn_generate" class="wstyle-gen-btn" style="padding: 8px 18px; font-size: 0.78rem;"><i class="fa-solid fa-bolt"></i> Generate Plan Now</button>
+            <div id="sp_classic_panel" style="display: ${sp.mode === 'evolving' ? 'none' : 'block'};">
+                <div class="mtab-panel">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px;">
+                        <div class="mtab-panel-title gold" style="margin-bottom:0;"><i class="fa-solid fa-book-open"></i> Current Story Plan</div>
+                        <button id="sp_btn_generate" class="wstyle-gen-btn" style="padding: 8px 18px; font-size: 0.78rem;"><i class="fa-solid fa-bolt"></i> Generate Plan Now</button>
+                    </div>
+                    <textarea id="sp_current_plan" class="ps-modern-input" style="height: 250px; resize: vertical; font-size: 0.85rem; line-height: 1.5; margin-bottom: 12px;" placeholder="Generated plot milestones will appear here.">${sp.currentPlan || ""}</textarea>
+                    <div class="mtab-callout">
+                        <i class="fa-solid fa-circle-info"></i>
+                        <span>A tracker will be added automatically at the end of each response.</span>
+                    </div>
                 </div>
-                <textarea id="sp_current_plan" class="ps-modern-input" style="height: 250px; resize: vertical; font-size: 0.85rem; line-height: 1.5; margin-bottom: 12px;" placeholder="Generated plot milestones will appear here.">${sp.currentPlan || ""}</textarea>
-                <div class="mtab-callout">
-                    <i class="fa-solid fa-circle-info"></i>
-                    <span>A tracker will be added automatically at the end of each response.</span>
+            </div>
+
+            <div id="sp_evolving_panel" style="display: ${sp.mode === 'evolving' ? 'block' : 'none'};">
+                <div class="mtab-toggle-row ${sp.autoAdvance ? 'active' : ''}" id="sp_autoadvance" style="margin-bottom: 16px;">
+                    <div class="toggle-info">
+                        <div class="toggle-label"><i class="fa-solid fa-forward" style="color:var(--gold);"></i> Auto-Advance Arcs</div>
+                        <div class="toggle-desc">When the Story Tracker marks the active arc <b>Status: Complete</b>, automatically generate the next connecting arc.</div>
+                    </div>
+                    <div class="ps-switch"></div>
+                </div>
+
+                <div class="mtab-panel">
+                    <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 14px; gap: 8px; flex-wrap: wrap;">
+                        <div class="mtab-panel-title gold" style="margin-bottom:0;"><i class="fa-solid fa-compass-drafting"></i> Active Arc</div>
+                        <div style="display:flex; gap:8px;">
+                            <button id="sp_btn_first_arc" class="wstyle-gen-btn" style="padding: 8px 16px; font-size: 0.76rem;"><i class="fa-solid fa-seedling"></i> Generate First Arc</button>
+                            <button id="sp_btn_next_arc" class="wstyle-gen-btn" style="padding: 8px 16px; font-size: 0.76rem; background: linear-gradient(135deg, #10b981, #059669);"><i class="fa-solid fa-arrow-right-long"></i> Advance to Next Arc</button>
+                        </div>
+                    </div>
+                    <textarea id="sp_current_arc" class="ps-modern-input" style="height: 220px; resize: vertical; font-size: 0.85rem; line-height: 1.5; margin-bottom: 12px;" placeholder="The single focused arc the story is currently following will appear here.">${sp.currentArc || ""}</textarea>
+                    <div class="mtab-callout">
+                        <i class="fa-solid fa-circle-info"></i>
+                        <span>The AI stays focused on this one arc. When it resolves the arc's goals, it writes <b>Status: Complete</b> in the tracker and the next arc is built on top of it.</span>
+                    </div>
+                </div>
+
+                <div class="mtab-panel">
+                    <div class="mtab-panel-title gold"><i class="fa-solid fa-link"></i> Narrative Chain</div>
+                    <div id="sp_arc_chain" class="mtab-card-list"></div>
                 </div>
             </div>
         </div>
     `);
+
+    spRenderArcChain();
 
 
     // Listeners
@@ -1796,6 +1860,127 @@ function renderStoryPlanner(c) {
             btn.prop("disabled", false).html(`<i class="fa-solid fa-bolt"></i> Generate Plan Now`);
         }
     });
+
+    // --- EVOLVING NARRATIVE MODE LISTENERS ---
+    $("#sp_mode").on("change", e => {
+        sp.mode = $(e.target).val(); saveProfileToMemory();
+        if (sp.mode === 'evolving') { $("#sp_classic_panel").hide(); $("#sp_evolving_panel").show(); }
+        else { $("#sp_evolving_panel").hide(); $("#sp_classic_panel").show(); }
+    });
+
+    $("#sp_current_arc").on("input", e => { sp.currentArc = $(e.target).val(); saveProfileToMemory(); });
+
+    $("#sp_autoadvance").on("click", function () {
+        sp.autoAdvance = !sp.autoAdvance; saveProfileToMemory();
+        $(this).toggleClass("active", sp.autoAdvance);
+    });
+
+    // Generate First Arc — cold start. Starts a fresh narrative chain.
+    $("#sp_btn_first_arc").on("click", async function () {
+        const chatText = getCleanedChatHistory();
+        if (chatText.length < 100) return toastr.warning("Not enough chat history to generate an arc.");
+        if (sp.arcChain.length > 0 && !confirm("This will start a fresh narrative and clear the existing arc chain. Continue?")) return;
+
+        const btn = $(this);
+        btn.prop("disabled", true).html(`<i class="fa-solid fa-spinner fa-spin"></i> Designing...`);
+        try {
+            let output;
+            if (!sp.backend || sp.backend === "direct") {
+                output = await generateEvolvingArcLogic('first', '', chatText);
+            } else {
+                await useMeguminEngine(async () => { output = await generateEvolvingArcLogic('first', '', chatText); });
+            }
+            const plotMatch = output && output.match(/<plot>([\s\S]*?)<\/plot>/i);
+            if (plotMatch) {
+                sp.arcChain = [];
+                sp.arcNumber = 0;
+                sp.currentArc = plotMatch[1].trim();
+                $("#sp_current_arc").val(sp.currentArc);
+                saveProfileToMemory();
+                spRenderArcChain();
+                toastr.success("First Arc Generated!");
+            } else {
+                toastr.warning("AI failed to format the arc correctly. Try again.");
+            }
+        } catch (e) {
+            toastr.error("Failed to generate arc.");
+        } finally {
+            btn.prop("disabled", false).html(`<i class="fa-solid fa-seedling"></i> Generate First Arc`);
+        }
+    });
+
+    // Advance to Next Arc — manual twin of the auto-advance in MESSAGE_RECEIVED.
+    $("#sp_btn_next_arc").on("click", async function () {
+        if (!sp.currentArc || sp.currentArc.trim() === "") return toastr.warning("Generate a first arc before advancing.");
+        const chatText = getCleanedChatHistory();
+        if (chatText.length < 100) return toastr.warning("Not enough chat history to generate the next arc.");
+
+        const btn = $(this);
+        const prevArc = sp.currentArc;
+        btn.prop("disabled", true).html(`<i class="fa-solid fa-spinner fa-spin"></i> Connecting...`);
+        try {
+            let output;
+            if (!sp.backend || sp.backend === "direct") {
+                output = await generateEvolvingArcLogic('next', prevArc, chatText);
+            } else {
+                await useMeguminEngine(async () => { output = await generateEvolvingArcLogic('next', prevArc, chatText); });
+            }
+            const plotMatch = output && output.match(/<plot>([\s\S]*?)<\/plot>/i);
+            if (plotMatch) {
+                sp.arcChain.push({ n: sp.arcNumber, text: prevArc, completedAt: Date.now() });
+                sp.arcNumber = (sp.arcNumber || 0) + 1;
+                sp.currentArc = plotMatch[1].trim();
+                $("#sp_current_arc").val(sp.currentArc);
+                saveProfileToMemory();
+                spRenderArcChain();
+                toastr.success(`Advanced to Arc ${sp.arcNumber}!`);
+            } else {
+                toastr.warning("AI failed to format the next arc correctly. Try again.");
+            }
+        } catch (e) {
+            toastr.error("Failed to generate next arc.");
+        } finally {
+            btn.prop("disabled", false).html(`<i class="fa-solid fa-arrow-right-long"></i> Advance to Next Arc`);
+        }
+    });
+}
+
+// Renders the Evolving Narrative arc chain (archived arcs + the active one).
+// No-ops when the Story Planner tab is not open.
+function spRenderArcChain() {
+    const container = $("#sp_arc_chain");
+    if (!container.length) return;
+    const sp = localProfile.storyPlan;
+    container.empty();
+
+    const chain = Array.isArray(sp.arcChain) ? sp.arcChain : [];
+    if (chain.length === 0 && (!sp.currentArc || sp.currentArc.trim() === "")) {
+        container.append(`<div style="color: var(--text-muted); font-size: 0.82rem; padding: 6px 2px;">No arcs yet. Hit <b>Generate First Arc</b> to begin the narrative.</div>`);
+        return;
+    }
+
+    const truncate = (t) => {
+        const clean = (t || "").replace(/\s+/g, ' ').trim();
+        return clean.length > 220 ? clean.slice(0, 220) + "…" : clean;
+    };
+
+    chain.forEach(arc => {
+        container.append(`
+            <div class="mtab-callout" style="margin-bottom: 8px; display:block;">
+                <div style="font-weight:bold; color: var(--text-muted); font-size:0.72rem; margin-bottom:4px;"><i class="fa-solid fa-circle-check" style="color:#10b981;"></i> ARC ${arc.n} — Completed</div>
+                <div style="font-size:0.8rem; white-space:pre-wrap;">${$("<div>").text(truncate(arc.text)).html()}</div>
+            </div>
+        `);
+    });
+
+    if (sp.currentArc && sp.currentArc.trim() !== "") {
+        container.append(`
+            <div class="mtab-callout gold" style="margin-bottom: 4px; display:block; border-color: var(--gold);">
+                <div style="font-weight:bold; color: var(--gold); font-size:0.72rem; margin-bottom:4px;"><i class="fa-solid fa-play"></i> ARC ${sp.arcNumber} — Active</div>
+                <div style="font-size:0.8rem; white-space:pre-wrap;">${$("<div>").text(truncate(sp.currentArc)).html()}</div>
+            </div>
+        `);
+    }
 }
 
 async function generateStoryPlanLogic(chatText) {
@@ -1805,6 +1990,15 @@ async function generateStoryPlanLogic(chatText) {
         return rawOutput;
     } finally {
         activeStoryPlanRequest = null;
+    }
+}
+
+async function generateEvolvingArcLogic(mode, prevArc, chatText) {
+    activeEvolvingArcRequest = { mode, prevArc: prevArc || "", chatText };
+    try {
+        return await generateQuietPrompt({ prompt: "___PS_EVOLVING_ARC___" });
+    } finally {
+        activeEvolvingArcRequest = null;
     }
 }
 
@@ -4466,15 +4660,30 @@ function buildBaseDict() {
 
     // Story Planner Injection
     if (localProfile.storyPlan && localProfile.storyPlan.enabled) {
-        const planText = localProfile.storyPlan.currentPlan;
-        if (planText && planText.trim() !== "") {
-            dict["[[storyplan]]"] = `<Story_Plan>\nThis is a possible event for the story, take from it:\n${planText}\n</Story_Plan>`;
-        } else {
-            dict["[[storyplan]]"] = "";
-        }
+        const sp = localProfile.storyPlan;
+        if (sp.mode === 'evolving') {
+            // EVOLVING NARRATIVE: inject the single active arc with focus framing.
+            const arcText = sp.currentArc || "";
+            if (arcText.trim() !== "") {
+                dict["[[storyplan]]"] = `<Story_Plan>\nThis is the ACTIVE story arc. Drive the narrative toward resolving this arc's goals. Stay focused on it; do not jump to unrelated plots:\n${arcText}\n</Story_Plan>`;
+            } else {
+                dict["[[storyplan]]"] = "";
+            }
 
-        // The refined tracker block you asked for
-        dict["[[storytracker]]"] = `<Story_Tracker>\narc: The Arc that is now active.\nchapter: The chapter that is now active.\nEpisode: The episode that is now active.\nSecrets: Any secret that the user/{{user}} doesn't know.\n</Story_Tracker>`;
+            // Tracker gains a Status line that signals arc completion.
+            dict["[[storytracker]]"] = `<Story_Tracker>\narc: The Arc that is now active.\nchapter: The chapter that is now active.\nEpisode: The episode that is now active.\nSecrets: Any secret that the user/{{user}} doesn't know.\nStatus: Active or Complete. Write "Complete" ONLY when the active arc's central goals are fully resolved; otherwise write "Active".\n</Story_Tracker>`;
+        } else {
+            // CLASSIC: brainstormed menu of arcs (unchanged).
+            const planText = sp.currentPlan;
+            if (planText && planText.trim() !== "") {
+                dict["[[storyplan]]"] = `<Story_Plan>\nThis is a possible event for the story, take from it:\n${planText}\n</Story_Plan>`;
+            } else {
+                dict["[[storyplan]]"] = "";
+            }
+
+            // The refined tracker block you asked for
+            dict["[[storytracker]]"] = `<Story_Tracker>\narc: The Arc that is now active.\nchapter: The chapter that is now active.\nEpisode: The episode that is now active.\nSecrets: Any secret that the user/{{user}} doesn't know.\n</Story_Tracker>`;
+        }
     } else {
         dict["[[storyplan]]"] = "";
         dict["[[storytracker]]"] = "";
@@ -4696,6 +4905,48 @@ async function handlePromptInjection(data, type) {
         return;
     }
 
+    // --- INJECT EVOLVING NARRATIVE ARC PROMPT ---
+    if (activeEvolvingArcRequest) {
+        messages.length = 0;
+        const req = activeEvolvingArcRequest;
+
+        // SillyTavern macro substitutions to get Lore and Persona
+        const charLore = typeof substituteParams === 'function' ? substituteParams('{{description}}') : "No character description found.";
+        const userPersona = typeof substituteParams === 'function' ? substituteParams('{{persona}}') : "No user persona found.";
+
+        messages.push({
+            "role": "system",
+            "content": `Role: You are an expert Story Architect specializing in single, focused narrative arcs.\n\n<lore>\n${charLore}\n</lore>\n\nUser Persona ({{user}}):\n<user_persona>\n${userPersona}\n</user_persona>\n\n<Story>\n${req.chatText}\n</Story>`
+                + (req.mode === 'next' ? `\n\n<Previous_Arc>\n${req.prevArc}\n</Previous_Arc>` : ``)
+        });
+
+        if (req.mode === 'next') {
+            messages.push({
+                "role": "user",
+                "content": `Task: The Previous Arc (provided above) has just been COMPLETED. Design the ONE next Arc that connects directly to it and carries the story forward.\n\nStrict Rules & Constraints:\n1. CONTINUITY FIRST: The new arc must build on the consequences, fallout, and unresolved threads of the Previous Arc and the recent story. It is a continuation, NOT a reset or a brand-new unrelated plot.\n2. Produce EXACTLY ONE arc — a single focused dramatic unit with a clear new central tension and an implied resolution condition. This is not a list or a menu of options.\n3. DO NOT write the immediate next scene or any dialogue. Describe the arc's shape: its central conflict, the stakes, 2-4 escalating beats/chapters, and what "resolved" looks like.\n4. Use Narrative Structure, NOT Timeframes: Do not use phrases like "three days later" or "next month." Frame everything as a future Arc, Chapter, or Episode beat.\n5. Zero Agency Theft: You are STRICTLY FORBIDDEN from writing dialogue, actions, thoughts, or emotional reactions for {{user}}. You must never describe what {{user}} does, feels, or says under any circumstances. Never predict, suggest, or assume what {{user}} will do next.\n\nFormat & Style: Give the new arc a short title, then describe it in punchy, plot-focused prose/beats. Make the hand-off from the previous arc feel deliberate and earned.`
+            });
+        } else {
+            messages.push({
+                "role": "user",
+                "content": `Task: Design ONE single, focused current Arc for the story going forward, grounded in the story so far.\n\nStrict Rules & Constraints:\n1. Produce EXACTLY ONE arc — not a list, not a menu of possibilities. A tight, self-contained dramatic unit with a clear central tension and an implied resolution condition.\n2. DO NOT write the immediate next scene or any dialogue. Describe the arc's shape: its central conflict, the stakes, 2-4 escalating beats/chapters, and what "resolved" looks like.\n3. Use Narrative Structure, NOT Timeframes: Do not use phrases like "three days later" or "next month." Frame everything as a future Arc, Chapter, or Episode beat.\n4. Zero Agency Theft: You are STRICTLY FORBIDDEN from writing dialogue, actions, thoughts, or emotional reactions for {{user}}. You must never describe what {{user}} does, feels, or says under any circumstances. Never predict, suggest, or assume what {{user}} will do next.\n5. Keep it focused and actionable — this arc becomes the active throughline the story follows until its goals are fully resolved.\n\nFormat & Style: Give the arc a short title, then describe it in punchy, plot-focused prose/beats.`
+            });
+        }
+
+        messages.push({
+            "role": "system",
+            "content": "<thinking_steps>\nBefore creating the response, think deeply.\nThoughts must be wrapped in <think></think>. The first token must be <think>. The main text must immediately follow </think>.\n<think>\nReflect in approximately 100–150 words as a seamless paragraph.\n</think>\n</thinking_steps>\n\n[OUTPUT ORDER]\nEvery response must follow this exact structure in this exact order:\n<think>\n{Thinking}\n</think>\n<plot>\n{the single arc}\n</plot>"
+        });
+        if (!disablePrefill) {
+            messages.push({
+                "role": "assistant",
+                "content": "ok i will start thinking \n<think>\n"
+            });
+        }
+
+        console.log(`[${extensionName}] 🎯 Injected Evolving Arc (${req.mode}) array in memory.`);
+        return;
+    }
+
     if (activeBanListChat) {
         messages.length = 0;
         messages.push({ "role": "system", "content": "You are an expert literary critique. Analyze the provided chat history and identify the 5 most repetitive, cliché, or overused stylistic patterns or crutch phrases the writer relies on. Instead of quoting the exact phrase, write a short, generalized rule forbidding the underlying trope. Return ONLY the 5 rules separated by commas. Do not explain them. Do not use quotes or numbers." });
@@ -4857,7 +5108,7 @@ async function handlePromptInjection(data, type) {
     }
 
     // --- PROMPT PREVIEW ---
-    const isBackgroundGen = activeStoryPlanRequest || activeBanListChat || activeImageGenRequest || activeNpcPfpRequest || activeMemorySummarizationRequest || activeGenerationOrder;
+    const isBackgroundGen = activeStoryPlanRequest || activeEvolvingArcRequest || activeBanListChat || activeImageGenRequest || activeNpcPfpRequest || activeMemorySummarizationRequest || activeGenerationOrder;
 
     // Prevent double-popups from Token Counting or rapid ST background triggers
     const now = Date.now();
@@ -5323,6 +5574,7 @@ jQuery(async () => {
                 initProfile(); updateCharacterDisplay();
                 if ($("#prompt-slot-modal-overlay").is(":visible")) switchTab(currentTab);
                 updateMemoryVisuals();
+                evolvingLastProcessedLen = -1; // reset Evolving auto-advance guard on chat switch
             });
             // Background Vectorization triggers for Semantic Mode
             eventSource.on(event_types.USER_MESSAGE_RENDERED, memUpdateSemanticQuery);
@@ -5334,9 +5586,9 @@ jQuery(async () => {
             eventSource.on(event_types.MESSAGE_RECEIVED, async () => {
                 updateMemoryVisuals();
 
-                // AUTO-TRIGGER STORY PLANNER
+                // AUTO-TRIGGER STORY PLANNER (Classic mode only)
                 const sp = localProfile?.storyPlan;
-                if (sp && sp.enabled && sp.triggerMode === 'frequency') {
+                if (sp && sp.enabled && sp.mode !== 'evolving' && sp.triggerMode === 'frequency') {
                     const chat = getContext().chat;
                     const aiMsgCount = chat.filter(m => !m.is_user && !m.is_system).length;
                     if (aiMsgCount > 0 && aiMsgCount % sp.autoFreq === 0) {
@@ -5355,6 +5607,50 @@ jQuery(async () => {
                                 }
                             } catch (e) { console.error("Story Plan auto-gen failed", e); }
                         }, 2000); // Small delay to let chat save first
+                    }
+                }
+
+                // AUTO-ADVANCE EVOLVING NARRATIVE
+                if (sp && sp.enabled && sp.mode === 'evolving' && sp.autoAdvance) {
+                    const chat = getContext().chat || [];
+                    // Find latest AI (non-user, non-system) message and its index.
+                    let lastAi = null, lastIdx = -1;
+                    for (let i = chat.length - 1; i >= 0; i--) {
+                        if (!chat[i].is_user && !chat[i].is_system) { lastAi = chat[i]; lastIdx = i; break; }
+                    }
+                    // Guard: only process each message index once (swipes/edits re-fire this event).
+                    if (lastAi && lastIdx !== evolvingLastProcessedLen) {
+                        const trackerMatch = (lastAi.mes || "").match(/<Story_Tracker>([\s\S]*?)<\/Story_Tracker>/i);
+                        const isComplete = trackerMatch && /Status:\s*Complete/i.test(trackerMatch[1]);
+                        console.log(`[${extensionName}] Evolving: lastIdx=${lastIdx} complete=${!!isComplete}`);
+                        if (isComplete && sp.currentArc && sp.currentArc.trim() !== "") {
+                            evolvingLastProcessedLen = lastIdx; // claim it before async work
+                            toastr.info("Arc complete — generating the next connecting arc...", "Megumin Suite");
+                            setTimeout(async () => {
+                                const chatText = getCleanedChatHistory();
+                                if (chatText.length < 100) return;
+                                const prevArc = sp.currentArc;
+                                try {
+                                    let output = sp.backend === "direct"
+                                        ? await generateEvolvingArcLogic('next', prevArc, chatText)
+                                        : await new Promise(r => useMeguminEngine(async () => r(await generateEvolvingArcLogic('next', prevArc, chatText))));
+                                    const m = output?.match(/<plot>([\s\S]*?)<\/plot>/i);
+                                    if (m) {
+                                        sp.arcChain.push({ n: sp.arcNumber, text: prevArc, completedAt: Date.now() });
+                                        sp.arcNumber = (sp.arcNumber || 0) + 1;
+                                        sp.currentArc = m[1].trim();
+                                        saveProfileToMemory();
+                                        if ($("#sp_current_arc").length) $("#sp_current_arc").val(sp.currentArc);
+                                        spRenderArcChain();
+                                        toastr.success(`Advanced to Arc ${sp.arcNumber}!`, "Megumin Suite");
+                                    } else {
+                                        toastr.warning("Next arc generation failed to format. Use 'Advance to Next Arc' manually.");
+                                    }
+                                } catch (e) { console.error("[Megumin Suite] Evolving arc auto-advance failed", e); }
+                            }, 2000);
+                        } else {
+                            evolvingLastProcessedLen = lastIdx; // mark seen even if not complete
+                        }
                     }
                 }
 
