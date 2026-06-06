@@ -4734,7 +4734,7 @@ function buildBaseDict() {
             }
 
             // Tracker gains a Status line that signals arc completion.
-            dict["[[storytracker]]"] = `<Story_Tracker>\nArc: The Arc that is now active.\nChapter: The chapter that is now active (number — name, e.g. 1 — A Stranger in the Dark).\nSecrets: Any secret that the user/{{user}} doesn't know.\nStatus: Active or Complete. Write "Complete" ONLY when the active arc's central goals are fully resolved; otherwise write "Active".\n</Story_Tracker>`;
+            dict["[[storytracker]]"] = `# At the very end of EVERY reply, always output this block — without exception, even during level-ups, combat, dice rolls, or other system events. Never omit, skip, or defer it.\n<Story_Tracker>\nArc: The Arc that is now active.\nChapter: The chapter that is now active (number — name, e.g. 1 — A Stranger in the Dark). Keep it consistent with the story's progression; do not reset or decrease the number.\nSecrets: Any secret that the user/{{user}} doesn't know.\nStatus: Active or Complete. Write "Complete" as soon as the active arc's central goal is genuinely achieved (the objective the arc was driving toward is reached); otherwise write "Active".\n</Story_Tracker>`;
         } else {
             // CLASSIC: brainstormed menu of arcs (unchanged).
             const planText = sp.currentPlan;
@@ -4745,7 +4745,7 @@ function buildBaseDict() {
             }
 
             // The refined tracker block you asked for
-            dict["[[storytracker]]"] = `<Story_Tracker>\nArc: The Arc that is now active.\nChapter: The chapter that is now active (number — name, e.g. 1 — A Stranger in the Dark).\nSecrets: Any secret that the user/{{user}} doesn't know.\n</Story_Tracker>`;
+            dict["[[storytracker]]"] = `# At the very end of EVERY reply, always output this block — without exception, even during level-ups, combat, dice rolls, or other system events. Never omit, skip, or defer it.\n<Story_Tracker>\nArc: The Arc that is now active.\nChapter: The chapter that is now active (number — name, e.g. 1 — A Stranger in the Dark). Keep it consistent with the story's progression; do not reset or decrease the number.\nSecrets: Any secret that the user/{{user}} doesn't know.\n</Story_Tracker>`;
         }
     } else {
         dict["[[storyplan]]"] = "";
@@ -5523,7 +5523,7 @@ function renderDevMode(view = "landing", selectedModeId = null, passedModeData =
         flow.append(createOverrideBlock("[[DN]]", "dn", modeData.dn, [{ label: "No Change", value: "" }, { label: "Default", value: getAddon("dn") }]));
         flow.append(createOverrideBlock("[[COLOR]]", "dialogueColor", modeData.dialogueColor, [{ label: "No Change", value: "" }, { label: "Default", value: getAddon("color") }])); flow.append(createOverrideBlock("[[MVU]]", "mvu", modeData.mvu, [{ label: "No Change", value: "" }, { label: "Default", value: getBlock("mvu") }]));
         flow.append(createOverrideBlock("[[FATBODY]]", "fatbody", modeData.fatbody, [{ label: "No Change", value: "" }, { label: "Default", value: getBlock("fatbody") }]));
-        flow.append(createOverrideBlock("[[storytracker]]", "storytracker", modeData.storytracker, [{ label: "No Change", value: "" }, { label: "Default", value: "# at the very end of the response put this block:\n<Story_Tracker>\nArc: The Arc that is now active.\nChapter: The chapter that is now active (number — name, e.g. 1 — A Stranger in the Dark).\nSecrets: Any secret that the user/{{user}} doesn't know.\n</Story_Tracker>" }]));
+        flow.append(createOverrideBlock("[[storytracker]]", "storytracker", modeData.storytracker, [{ label: "No Change", value: "" }, { label: "Default", value: "# At the very end of EVERY reply, always output this block — without exception, even during level-ups, combat, dice rolls, or other system events. Never omit, skip, or defer it.\n<Story_Tracker>\nArc: The Arc that is now active.\nChapter: The chapter that is now active (number — name, e.g. 1 — A Stranger in the Dark). Keep it consistent with the story's progression; do not reset or decrease the number.\nSecrets: Any secret that the user/{{user}} doesn't know.\n</Story_Tracker>" }]));
 
         // Section 3: Global Variables
         flow.append(`<div class="ps-rule-title" style="margin: 30px 0 10px 0; color: #f59e0b;"><i class="fa-solid fa-earth-americas"></i> Global Variables Overrides</div>`);
