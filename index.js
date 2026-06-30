@@ -33,6 +33,7 @@ const addOneMessage         = _ctx.addOneMessage         ?? STScript.addOneMessa
 const getRequestHeaders     = _ctx.getRequestHeaders     ?? STScript.getRequestHeaders;
 const appendMediaToMessage  = _ctx.appendMediaToMessage  ?? STScript.appendMediaToMessage;
 const saveBase64AsFile      = _ctx.saveBase64AsFile      ?? STUtils.saveBase64AsFile;
+const getTokenCountAsync    = _ctx.getTokenCountAsync    ?? STScript.getTokenCountAsync; // may be undefined on older ST builds — callers must feature-detect
 const humanizedDateTime     = STRoss.humanizedDateTime;
 const Popup                 = STPopup.Popup;
 const POPUP_TYPE            = STPopup.POPUP_TYPE;
@@ -53,6 +54,7 @@ const extensionFolderPath = (() => {
 const TARGET_PRESET_NAME = "Megumin Engine";
 const DEFAULT_WORKING_MEMORY_LIMIT = 30;
 const DEFAULT_SHORT_TERM_MEMORY_LIMIT = 70;
+const NPC_INJECTION_CHAR_BUDGET = 6000;
 
 // -------------------------------------------------------------
 // STATE MANAGEMENT
@@ -198,7 +200,8 @@ function initProfile() {
         },
         npcBank: {
             enabled: false,
-            npcs: []
+            npcs: [],
+            maxBankSize: ""
         }
     };
 
@@ -283,6 +286,9 @@ function saveProfileToMemory() {
 }
 
 // NEW: Function to calculate and update the token UI with a Hover Breakdown
+let _tokenCountDebounceTimer = null;
+let _tokenCountRequestId = 0;
+
 function updateLiveTokenCount() {
     const counterBadge = $("#ps_live_token_count");
     if (!counterBadge.length) return;
@@ -345,6 +351,23 @@ function updateLiveTokenCount() {
     setTimeout(() => {
         counterBadge.css("color", "var(--text-muted)");
     }, 400);
+
+    // Refine the headline number with a real tokenizer if SillyTavern exposes one, debounced so
+    // rapid edits (typing in a textarea triggers this on every keystroke) don't spam it.
+    if (typeof getTokenCountAsync === "function") {
+        const fullText = `${engineStr}${cotStr}${styleStr}${addonsStr}`.replace(/\s+/g, ' ').trim();
+        const requestId = ++_tokenCountRequestId;
+        clearTimeout(_tokenCountDebounceTimer);
+        _tokenCountDebounceTimer = setTimeout(async () => {
+            try {
+                const exact = await getTokenCountAsync(fullText);
+                if (requestId !== _tokenCountRequestId) return; // a newer count superseded this one
+                if (typeof exact === "number" && Number.isFinite(exact)) {
+                    counterBadge.html(`<i class="fa-solid fa-microchip"></i> ${exact}`);
+                }
+            } catch (e) { /* tokenizer unavailable or failed — keep the heuristic value already shown */ }
+        }, 500);
+    }
 }
 
 let defaultImageCount = 0;
@@ -2555,6 +2578,16 @@ function npcBuildTextFromData(n) {
     return lines.join("\n");
 }
 
+// Lenient name match for NPC de-dup: catches "Sarah" vs "Sarah Connors" (a full name re-mentioned
+// as a first name, or vice versa). Deliberately NOT fuzzy/edit-distance matching — that would risk
+// merging unrelated short names (e.g. "Sara" vs "Sarah"), which is worse than an occasional duplicate.
+function npcNamesMatch(a, b) {
+    const na = (a || "").trim().toLowerCase();
+    const nb = (b || "").trim().toLowerCase();
+    if (!na || !nb) return false;
+    return na === nb || na.includes(nb) || nb.includes(na);
+}
+
 // Parse raw NPC dossier HTML block into structured fields
 function npcParseBlock(rawBlock) {
     const strip = (s) => (s || "").replace(/\*\*/g, "").replace(/<\/?[^>]+>/g, "").trim();
@@ -2766,6 +2799,11 @@ function renderNpcBank(c) {
             <div class="ps-switch"></div>
         </div>
 
+        <div class="mtab-setting-row" style="margin-bottom: 20px;">
+            <div class="set-info"><div class="set-label">Max Bank Size</div><div class="set-desc">Leave empty for no limit. Oldest/least-relevant NPCs are pruned when exceeded.</div></div>
+            <input type="number" id="npc_input_max_bank_size" class="ps-modern-input" style="width: 100px;" placeholder="e.g. 50" value="${nb.maxBankSize || ''}" min="1" />
+        </div>
+
         <div id="npc_main_content" style="display: ${nb.enabled ? 'block' : 'none'};">
             <div style="margin-top: 15px;">
                 <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 12px;">
@@ -2800,6 +2838,8 @@ function renderNpcBank(c) {
             renderNpcList();
         }
     });
+
+    $("#npc_input_max_bank_size").on("input", function () { nb.maxBankSize = $(this).val(); saveProfileToMemory(); });
 
     $("#npc_send_portraits").on("click", function () {
         nb.sendPortraitsToAi = !nb.sendPortraitsToAi; saveProfileToMemory();
@@ -4867,7 +4907,7 @@ function buildBaseDict() {
 
     if (localProfile.npcBank && localProfile.npcBank.enabled) {
         dict["[[npc_dossier]]"] = `<npc_dossier>
-  trigger: "Generates ONLY when a new significant NPC is introduced not cashiers, bartenders, random passersby, or one-line background faces. A 'significant NPC' is one with a name, meaningful dialogue, and likely recurrence."
+  trigger: "Generates ONLY if the new character passes ALL three checks this scene: (1) Named — referred to by a proper name, not just a role like 'the bartender' or 'a guard'. (2) Active — spoke at least one line of dialogue or took a story-relevant action, not merely mentioned in passing. (3) Recurring — plausibly reappears later, not a one-off transactional encounter (cashiers, random passersby, one-line background faces never qualify). If ANY check fails, do NOT generate a dossier."
 format: "Collapsible HTML details block. Dense, dashboard-style no prose."
 
   template: |
@@ -4912,11 +4952,22 @@ format: "Collapsible HTML details block. Dense, dashboard-style no prose."
                             if (contentLower.includes(kw)) { score++; matchedWords.push(kw); }
                         });
                         if (score >= 1) {
+                            n.lastMatchedAt = Date.now(); // mutate the real record so bank pruning knows this NPC is still relevant
                             scoredNpcs.push({ ...n, score, matchedWords });
                         }
                     });
                     scoredNpcs.sort((a, b) => b.score - a.score);
-                    const topNpcs = scoredNpcs.slice(0, 3);
+                    // Take NPCs in score order, but stop once the combined dossier text would exceed
+                    // the injection budget — a few very long dossiers shouldn't silently blow the context.
+                    const topNpcs = [];
+                    let budgetUsed = 0;
+                    for (const n of scoredNpcs) {
+                        if (topNpcs.length >= 3) break;
+                        const textLen = npcBuildTextFromData(n).length;
+                        if (topNpcs.length > 0 && budgetUsed + textLen > NPC_INJECTION_CHAR_BUDGET) break;
+                        topNpcs.push(n);
+                        budgetUsed += textLen;
+                    }
                     if (topNpcs.length > 0) {
                         let npcXML = "<retrieved_npcs>\n";
                         topNpcs.forEach(n => { npcXML += `<${n.name}>\n${npcBuildTextFromData(n)}\n</${n.name}>\n\n`; });
@@ -5776,9 +5827,10 @@ jQuery(async () => {
                                 const npcName = match[1].trim().replace(/<\/?b>/ig, "");
                                 const npcContent = match[0].trim();
                                 if (!npcBank.npcs) npcBank.npcs = [];
-                                if (!npcBank.npcs.find(n => (n.name || "").trim().toLowerCase() === npcName.toLowerCase())) {
+                                if (!npcBank.npcs.find(n => npcNamesMatch(n.name, npcName))) {
                                     // Parse structured fields from the raw block
                                     const parsed = npcParseBlock(npcContent);
+                                    const now = Date.now();
                                     npcBank.npcs.push({
                                         name: parsed.name || npcName,
                                         age: parsed.age || "",
@@ -5791,10 +5843,20 @@ jQuery(async () => {
                                         agenda: parsed.agenda || "",
                                         hiddenLayer: parsed.hiddenLayer || "",
                                         pfp: "",
-                                        timestamp: Date.now()
+                                        timestamp: now,
+                                        lastMatchedAt: now
                                     });
                                     added = true;
                                     toastr.success(`NPC added to Bank: ${npcName}`, "Megumin Suite");
+
+                                    // Prune the least-recently-relevant NPCs if a size cap is set
+                                    const maxBankSize = parseInt(npcBank.maxBankSize, 10);
+                                    if (!isNaN(maxBankSize) && maxBankSize > 0 && npcBank.npcs.length > maxBankSize) {
+                                        npcBank.npcs.sort((a, b) => (b.lastMatchedAt || b.timestamp || 0) - (a.lastMatchedAt || a.timestamp || 0));
+                                        const pruned = npcBank.npcs.splice(maxBankSize);
+                                        pruned.forEach(p => toastr.info(`NPC Bank full — pruned least-relevant NPC: ${p.name}`, "Megumin Suite"));
+                                    }
+
                                     if ($("#npc_bank_list").length) renderNpcList();
                                 }
                             }
