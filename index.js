@@ -51,6 +51,8 @@ const extensionFolderPath = (() => {
     }
 })();
 const TARGET_PRESET_NAME = "Megumin Engine";
+const DEFAULT_WORKING_MEMORY_LIMIT = 30;
+const DEFAULT_SHORT_TERM_MEMORY_LIMIT = 70;
 
 // -------------------------------------------------------------
 // STATE MANAGEMENT
@@ -138,7 +140,7 @@ function initProfile() {
         blocks: [],
         model: "cot-v1-english",
         userNotes: "",
-        userWordCount: "",
+        userParagraphCount: "",
         userLanguage: "",
         userPronouns: "off",
         devOverrides: {},
@@ -185,8 +187,8 @@ function initProfile() {
         memoryCore: {
             enabled: false,
             architecture: "raw_short_long", // "raw_short_long" or "raw_long"
-            workingLimit: 30,
-            shortTermLimit: 70,
+            workingLimit: DEFAULT_WORKING_MEMORY_LIMIT,
+            shortTermLimit: DEFAULT_SHORT_TERM_MEMORY_LIMIT,
             backend: "direct",
             scannerEngine: "tfidf",
             triggerMode: "frequency",
@@ -480,7 +482,7 @@ function applyTabToAll() {
         0: ["mode"],
         1: ["personality", "toggles"],
         2: ["activeStyleId", "aiRule", "customStyles", "dnRatio"],
-        3: ["userWordCount", "userLanguage", "userPronouns", "disableUtilityPrefill", "onomatopoeia"],
+        3: ["userParagraphCount", "userLanguage", "userPronouns", "disableUtilityPrefill", "onomatopoeia"],
         4: ["addons", "blocks"],
         5: ["model"],
         6: ["storyPlan"],
@@ -1375,8 +1377,8 @@ function renderAddons(c) {
                 <div class="ps-switch"></div>
             </div>
             <div class="mtab-setting-row">
-                <div class="set-info"><div class="set-label">Target Word Count</div><div class="set-desc">Leave empty for no limit</div></div>
-                <input type="number" id="ps_input_wordcount" class="ps-modern-input" style="width: 180px;" placeholder="e.g. 400" value="${localProfile.userWordCount || ''}" min="1" />
+                <div class="set-info"><div class="set-label">Target Paragraph Count</div><div class="set-desc">Leave empty for no limit</div></div>
+                <input type="number" id="ps_input_paragraphcount" class="ps-modern-input" style="width: 180px;" placeholder="e.g. 4" value="${localProfile.userParagraphCount || ''}" min="1" />
             </div>
             <div class="mtab-setting-row">
                 <div class="set-info"><div class="set-label">Language Output</div><div class="set-desc">Leave empty for default (English)</div></div>
@@ -1409,7 +1411,7 @@ function renderAddons(c) {
         if (localProfile.disableUtilityPrefill) $(this).addClass("active");
         else $(this).removeClass("active");
     });
-    $("#ps_input_wordcount").on("input", function () { localProfile.userWordCount = $(this).val(); saveProfileToMemory(); });
+    $("#ps_input_paragraphcount").on("input", function () { localProfile.userParagraphCount = $(this).val(); saveProfileToMemory(); });
     $("#ps_input_language").on("input", function () { localProfile.userLanguage = $(this).val(); saveProfileToMemory(); });
     $("#ps_select_pronouns").on("change", function () { localProfile.userPronouns = $(this).val(); saveProfileToMemory(); });
 }
@@ -2717,7 +2719,12 @@ async function npcGeneratePfp(npcName) {
                             resolve(null);
                         }
                     }
-                } catch (e) { }
+                } catch (e) {
+                    clearInterval(checkInterval);
+                    $("#kazuma_progress_overlay").hide();
+                    toastr.error("ComfyUI Error: " + e.message);
+                    resolve(null);
+                }
             }, 1000);
         });
     } catch (e) { $("#kazuma_progress_overlay").hide(); toastr.error("ComfyUI Error: " + e.message); return null; }
@@ -3270,7 +3277,7 @@ function renderMemoryCore(c) {
         let totalRealMessages = 0;
         for (let m of context.chat) { if (!m.is_system) totalRealMessages++; }
 
-        const workingLimit = mem.workingLimit || 30;
+        const workingLimit = mem.workingLimit || DEFAULT_WORKING_MEMORY_LIMIT;
         if (totalRealMessages > workingLimit) {
             toastr.info("Starting automatic extraction to fill new limits...");
             await memProcessPendingChunks(); // Start extraction!
@@ -3356,9 +3363,9 @@ function memRenderDashboard() {
     const isRawLong = (mem.architecture === "raw_long");
 
     // 1. Determine the projected TARGET sizes based purely on sliders
-    const targetWork = Math.min(totalRealMessages, mem.workingLimit || 30);
-    const targetShort = isRawLong ? 0 : Math.min(Math.max(0, totalRealMessages - targetWork), mem.shortTermLimit || 70);
-    const targetLong = isRawLong ? Math.max(0, totalRealMessages - targetWork) : Math.max(0, totalRealMessages - (targetWork + (mem.shortTermLimit || 70)));
+    const targetWork = Math.min(totalRealMessages, mem.workingLimit || DEFAULT_WORKING_MEMORY_LIMIT);
+    const targetShort = isRawLong ? 0 : Math.min(Math.max(0, totalRealMessages - targetWork), mem.shortTermLimit || DEFAULT_SHORT_TERM_MEMORY_LIMIT);
+    const targetLong = isRawLong ? Math.max(0, totalRealMessages - targetWork) : Math.max(0, totalRealMessages - (targetWork + (mem.shortTermLimit || DEFAULT_SHORT_TERM_MEMORY_LIMIT)));
 
     // 2. Determine ACTUAL summarized chunks currently in memory
     let actualShort = 0;
@@ -3486,7 +3493,7 @@ function memRenderVault(searchFilter = "") {
     $("#mem_vault_count").text(`${mem.longTermVault.length} Entries`);
 
     if (mem.longTermVault.length === 0) {
-        const passMsg = (mem.workingLimit || 30) + (mem.shortTermLimit || 70);
+        const passMsg = (mem.workingLimit || DEFAULT_WORKING_MEMORY_LIMIT) + (mem.shortTermLimit || DEFAULT_SHORT_TERM_MEMORY_LIMIT);
         list.append(`<div style="text-align: center; color: var(--text-muted); font-size: 0.8rem; padding: 10px;">Vault is empty. Chunks automatically migrate here once they pass message ${passMsg}.</div>`);
         return;
     }
@@ -3552,8 +3559,8 @@ async function memProcessPendingChunks() {
 
     const chat = context.chat;
     const mem = localProfile.memoryCore;
-    const workingLimit = mem.workingLimit || 30;
-    const shortTermLimit = mem.shortTermLimit || 70;
+    const workingLimit = mem.workingLimit || DEFAULT_WORKING_MEMORY_LIMIT;
+    const shortTermLimit = mem.shortTermLimit || DEFAULT_SHORT_TERM_MEMORY_LIMIT;
 
     // 1. Get a clean array of [Index, Message Object]
     const realMessages = [];
@@ -3680,7 +3687,7 @@ function memRunVaultMigration() {
 
     const chat = context.chat;
     const mem = localProfile.memoryCore;
-    const effectiveShortTermLimit = mem.architecture === "raw_long" ? (mem.workingLimit || 30) : ((mem.workingLimit || 30) + (mem.shortTermLimit || 70));
+    const effectiveShortTermLimit = mem.architecture === "raw_long" ? (mem.workingLimit || DEFAULT_WORKING_MEMORY_LIMIT) : ((mem.workingLimit || DEFAULT_WORKING_MEMORY_LIMIT) + (mem.shortTermLimit || DEFAULT_SHORT_TERM_MEMORY_LIMIT));
 
     const realMessages = [];
     for (let i = 0; i < chat.length; i++) {
@@ -3777,7 +3784,7 @@ function memSyncLimits() {
         : realMessages[realMessages.length - mem.workingLimit];
 
     // Find the cutoff index for Short-Term Memory
-    const effectiveShortLimit = (mem.workingLimit || 30) + (mem.shortTermLimit || 70);
+    const effectiveShortLimit = (mem.workingLimit || DEFAULT_WORKING_MEMORY_LIMIT) + (mem.shortTermLimit || DEFAULT_SHORT_TERM_MEMORY_LIMIT);
     const shortCutoffIndex = realMessages.length <= effectiveShortLimit
         ? 0
         : realMessages[realMessages.length - effectiveShortLimit];
@@ -4429,7 +4436,11 @@ async function igGenerateWithComfy(positivePrompt, target = null) {
                         $("#kazuma_progress_overlay").hide();
                     } else { $("#kazuma_progress_overlay").hide(); }
                 }
-            } catch (e) { }
+            } catch (e) {
+                clearInterval(checkInterval);
+                $("#kazuma_progress_overlay").hide();
+                toastr.error("Comfy Error: " + e.message);
+            }
         }, 1000);
     } catch (e) { $("#kazuma_progress_overlay").hide(); toastr.error("Comfy Error: " + e.message); }
 }
@@ -4517,7 +4528,7 @@ function buildBaseDict() {
     const dict = {};
     if (!localProfile) return dict;
 
-    // 1. GLOBAL DEFAULTS (Language, Pronouns, Word Count)
+    // 1. GLOBAL DEFAULTS (Language, Pronouns, Paragraph Count)
     const targetLang = (localProfile.userLanguage && localProfile.userLanguage.trim() !== "")
         ? localProfile.userLanguage.toUpperCase()
         : "ENGLISH";
@@ -4526,12 +4537,12 @@ function buildBaseDict() {
     if (localProfile.userPronouns === "male") dict["[[pronouns]]"] = `{{user}} is male. Always portray and address him as such.`;
     else if (localProfile.userPronouns === "female") dict["[[pronouns]]"] = `{{user}} is female. Always portray and address her as such.`;
 
-    const wordCountStr = (localProfile.userWordCount && String(localProfile.userWordCount).trim() !== "")
-        ? String(localProfile.userWordCount).trim()
+    const paragraphCountStr = (localProfile.userParagraphCount && String(localProfile.userParagraphCount).trim() !== "")
+        ? String(localProfile.userParagraphCount).trim()
         : null;
 
-    if (wordCountStr) {
-        dict["[[count]]"] = `— maximum ${wordCountStr} words`;
+    if (paragraphCountStr) {
+        dict["[[count]]"] = `— approximately ${paragraphCountStr} paragraphs`;
     } else {
         dict["[[count]]"] = "";
     }
@@ -4607,10 +4618,10 @@ function buildBaseDict() {
     // MVU Logic
     if (localProfile.blocks.includes("mvu")) {
         let baseMvu = hardcodedLogic.blocks.find(b => b.id === "mvu").content;
-        if (wordCountStr) dict["[[MVU]]"] = baseMvu.replace("[[count]]", `maximum ${wordCountStr} words`);
+        if (paragraphCountStr) dict["[[MVU]]"] = baseMvu.replace("[[count]]", `approximately ${paragraphCountStr} paragraphs`);
         else dict["[[MVU]]"] = baseMvu.replace("[[count]]", "...");
     } else {
-        dict["[[MVU]]"] = wordCountStr ? `{main response — maximum ${wordCountStr} words}` : `{main response}`;
+        dict["[[MVU]]"] = paragraphCountStr ? `{main response — approximately ${paragraphCountStr} paragraphs}` : `{main response}`;
     }
 
     // Fatbody D&D Logic — injects the Fatbody DnD Framework mechanics (dice, combat, XP, loot).
@@ -5529,7 +5540,7 @@ function renderDevMode(view = "landing", selectedModeId = null, passedModeData =
         flow.append(`<div class="ps-rule-title" style="margin: 30px 0 10px 0; color: #f59e0b;"><i class="fa-solid fa-earth-americas"></i> Global Variables Overrides</div>`);
         flow.append(createOverrideBlock("[[Language]]", "language", modeData.language, [{ label: "No Change", value: "" }, { label: "English Template", value: "[LANGUAGE RULE]\nALL OUTPUT EXCEPT THINKING MUST BE IN ENGLISH ONLY." }]));
         flow.append(createOverrideBlock("[[pronouns]]", "pronouns", modeData.pronouns, [{ label: "No Change", value: "" }, { label: "Male Template", value: "{{user}} is male. Always portray and address him as such." }]));
-        flow.append(createOverrideBlock("[[count]]", "count", modeData.count, [{ label: "No Change", value: "" }, { label: "Example 400", value: "— maximum 400 words" }]));
+        flow.append(createOverrideBlock("[[count]]", "count", modeData.count, [{ label: "No Change", value: "" }, { label: "Example 4", value: "— approximately 4 paragraphs" }]));
         flow.append(createOverrideBlock("[[DNRATIO]]", "dnratio", modeData.dnratio, [{ label: "No Change", value: "" }, { label: "Example 50/50", value: "- Ratio: Maintain a balance of 50% Dialogue and 50% Narration." }]));
         flow.append(createOverrideBlock("[[onomato]]", "onomato", modeData.onomato, [{ label: "No Change", value: "" }, { label: "Default", value: "- Narration must utilize onomatopoeia. Use precise, context-specific phonetic representations for physical interactions (e.g., the click of a latch, the thud of a heavy object, the soughing of wind) rather than abstract descriptions of sound." }]));
         flow.append(createOverrideBlock("[[banlist]]", "banlist", modeData.banlist, [{ label: "No Change", value: "" }, { label: "Example", value: "[BAN LIST]\nNever rely on these clichés, tropes, or repetitive patterns. They are dead language:\n- A shiver ran down their spine." }]));
