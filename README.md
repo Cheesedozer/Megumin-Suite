@@ -72,6 +72,12 @@ Tired of the AI saying *"a shiver ran down your spine"* or *"testament to..."*?
 *   **World State Tracker:** Injects a collapsible dashboard tracking the date, weather, PC's physical state, and NPC agendas.
 *   **NPC Inner Chatter:** Forces the AI to output a hidden block of dialogue showing what the NPCs are *actually* thinking behind their masks.
 
+###  🔗 Fatbody D&D Framework Compatibility
+Enabling the **Fatbody D&D** block injects D&D-style mechanics (dice rolls, combat, saving throws, XP, loot, leveling) into your preset.
+*   **Live pull:** if the [Fatbody D&D Framework](https://github.com/MultihogAurelius/SillyTavern-FatbodyDnDFramework) extension is installed and enabled, this block automatically pulls Fatbody's *current* rules — respecting whatever module toggles and campaign mode (D&D or Modern) you have set there — instead of a frozen copy.
+*   **No double injection:** with **Suite Mode** and **Additive delivery** both turned on in Fatbody's settings, Fatbody automatically skips its own separate injection since the Suite's block is already carrying the mechanics live.
+*   **Standalone fallback:** if Fatbody isn't installed (or is too old to expose the live-pull API), this block falls back to a bundled static ruleset so it still works on its own.
+
 ---
 
 ## ⚙️ Installation
