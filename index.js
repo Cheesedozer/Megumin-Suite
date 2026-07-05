@@ -143,6 +143,7 @@ function initProfile() {
         model: "cot-v1-english",
         userNotes: "",
         userParagraphCount: "",
+        userSentencesPerParagraph: "",
         userLanguage: "",
         userPronouns: "off",
         devOverrides: {},
@@ -505,7 +506,7 @@ function applyTabToAll() {
         0: ["mode"],
         1: ["personality", "toggles"],
         2: ["activeStyleId", "aiRule", "customStyles", "dnRatio"],
-        3: ["userParagraphCount", "userLanguage", "userPronouns", "disableUtilityPrefill", "onomatopoeia"],
+        3: ["userParagraphCount", "userSentencesPerParagraph", "userLanguage", "userPronouns", "disableUtilityPrefill", "onomatopoeia"],
         4: ["addons", "blocks"],
         5: ["model"],
         6: ["storyPlan"],
@@ -1400,8 +1401,12 @@ function renderAddons(c) {
                 <div class="ps-switch"></div>
             </div>
             <div class="mtab-setting-row">
-                <div class="set-info"><div class="set-label">Target Paragraph Count</div><div class="set-desc">Leave empty for no limit</div></div>
-                <input type="number" id="ps_input_paragraphcount" class="ps-modern-input" style="width: 180px;" placeholder="e.g. 4" value="${localProfile.userParagraphCount || ''}" min="1" />
+                <div class="set-info"><div class="set-label">Target Paragraphs</div><div class="set-desc">Leave empty for no limit. Accepts a single number or a range, e.g. 3-5</div></div>
+                <input type="text" id="ps_input_paragraphcount" class="ps-modern-input" style="width: 180px;" placeholder="e.g. 3-5" value="${localProfile.userParagraphCount || ''}" />
+            </div>
+            <div class="mtab-setting-row">
+                <div class="set-info"><div class="set-label">Sentences per Paragraph</div><div class="set-desc">Optional. Anchors paragraph length, e.g. 3-5</div></div>
+                <input type="text" id="ps_input_sentencecount" class="ps-modern-input" style="width: 180px;" placeholder="e.g. 3-5" value="${localProfile.userSentencesPerParagraph || ''}" />
             </div>
             <div class="mtab-setting-row">
                 <div class="set-info"><div class="set-label">Language Output</div><div class="set-desc">Leave empty for default (English)</div></div>
@@ -1435,6 +1440,7 @@ function renderAddons(c) {
         else $(this).removeClass("active");
     });
     $("#ps_input_paragraphcount").on("input", function () { localProfile.userParagraphCount = $(this).val(); saveProfileToMemory(); });
+    $("#ps_input_sentencecount").on("input", function () { localProfile.userSentencesPerParagraph = $(this).val(); saveProfileToMemory(); });
     $("#ps_input_language").on("input", function () { localProfile.userLanguage = $(this).val(); saveProfileToMemory(); });
     $("#ps_select_pronouns").on("change", function () { localProfile.userPronouns = $(this).val(); saveProfileToMemory(); });
 }
@@ -4564,6 +4570,18 @@ $("body").on("input", "#ps_main_current_rule", function () {
 // -------------------------------------------------------------
 // EVENT LISTENERS & INITS
 // -------------------------------------------------------------
+function parseCountRange(raw) {
+    const s = (raw || "").trim();
+    if (!s) return null;
+    const m = s.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+        const lo = Math.min(+m[1], +m[2]), hi = Math.max(+m[1], +m[2]);
+        return lo === hi ? `${lo}` : `${lo}–${hi}`;
+    }
+    const n = s.match(/^\d+$/);
+    return n ? s : null;
+}
+
 function buildBaseDict() {
     const dict = {};
     if (!localProfile) return dict;
@@ -4577,15 +4595,16 @@ function buildBaseDict() {
     if (localProfile.userPronouns === "male") dict["[[pronouns]]"] = `{{user}} is male. Always portray and address him as such.`;
     else if (localProfile.userPronouns === "female") dict["[[pronouns]]"] = `{{user}} is female. Always portray and address her as such.`;
 
-    const paragraphCountStr = (localProfile.userParagraphCount && String(localProfile.userParagraphCount).trim() !== "")
-        ? String(localProfile.userParagraphCount).trim()
-        : null;
+    const paragraphPhrase = parseCountRange(localProfile.userParagraphCount);
+    const sentencePhrase = parseCountRange(localProfile.userSentencesPerParagraph);
 
-    if (paragraphCountStr) {
-        dict["[[count]]"] = `— approximately ${paragraphCountStr} paragraphs`;
-    } else {
-        dict["[[count]]"] = "";
+    let countStr = null;
+    if (paragraphPhrase) {
+        countStr = `approximately ${paragraphPhrase} paragraphs`;
+        if (sentencePhrase) countStr += ` of ${sentencePhrase} sentences each`;
     }
+
+    dict["[[count]]"] = countStr ? `— ${countStr}` : "";
 
     // 2. STANDARD STAGE SELECTIONS (Stage 2, 4, 5, 6)
 
@@ -4658,10 +4677,10 @@ function buildBaseDict() {
     // MVU Logic
     if (localProfile.blocks.includes("mvu")) {
         let baseMvu = hardcodedLogic.blocks.find(b => b.id === "mvu").content;
-        if (paragraphCountStr) dict["[[MVU]]"] = baseMvu.replace("[[count]]", `approximately ${paragraphCountStr} paragraphs`);
+        if (countStr) dict["[[MVU]]"] = baseMvu.replace("[[count]]", countStr);
         else dict["[[MVU]]"] = baseMvu.replace("[[count]]", "...");
     } else {
-        dict["[[MVU]]"] = paragraphCountStr ? `{main response — approximately ${paragraphCountStr} paragraphs}` : `{main response}`;
+        dict["[[MVU]]"] = countStr ? `{main response — ${countStr}}` : `{main response}`;
     }
 
     // Fatbody D&D Logic — injects the Fatbody DnD Framework mechanics (dice, combat, XP, loot).
@@ -5591,7 +5610,7 @@ function renderDevMode(view = "landing", selectedModeId = null, passedModeData =
         flow.append(`<div class="ps-rule-title" style="margin: 30px 0 10px 0; color: #f59e0b;"><i class="fa-solid fa-earth-americas"></i> Global Variables Overrides</div>`);
         flow.append(createOverrideBlock("[[Language]]", "language", modeData.language, [{ label: "No Change", value: "" }, { label: "English Template", value: "[LANGUAGE RULE]\nALL OUTPUT EXCEPT THINKING MUST BE IN ENGLISH ONLY." }]));
         flow.append(createOverrideBlock("[[pronouns]]", "pronouns", modeData.pronouns, [{ label: "No Change", value: "" }, { label: "Male Template", value: "{{user}} is male. Always portray and address him as such." }]));
-        flow.append(createOverrideBlock("[[count]]", "count", modeData.count, [{ label: "No Change", value: "" }, { label: "Example 4", value: "— approximately 4 paragraphs" }]));
+        flow.append(createOverrideBlock("[[count]]", "count", modeData.count, [{ label: "No Change", value: "" }, { label: "Example 3-5", value: "— approximately 3–5 paragraphs of 3–5 sentences each" }]));
         flow.append(createOverrideBlock("[[DNRATIO]]", "dnratio", modeData.dnratio, [{ label: "No Change", value: "" }, { label: "Example 50/50", value: "- Ratio: Maintain a balance of 50% Dialogue and 50% Narration." }]));
         flow.append(createOverrideBlock("[[onomato]]", "onomato", modeData.onomato, [{ label: "No Change", value: "" }, { label: "Default", value: "- Narration must utilize onomatopoeia. Use precise, context-specific phonetic representations for physical interactions (e.g., the click of a latch, the thud of a heavy object, the soughing of wind) rather than abstract descriptions of sound." }]));
         flow.append(createOverrideBlock("[[banlist]]", "banlist", modeData.banlist, [{ label: "No Change", value: "" }, { label: "Example", value: "[BAN LIST]\nNever rely on these clichés, tropes, or repetitive patterns. They are dead language:\n- A shiver ran down their spine." }]));
