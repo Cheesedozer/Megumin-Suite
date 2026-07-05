@@ -1452,7 +1452,7 @@ function renderBlocks(c) {
         "summary": "Keeps a running story digest that the AI updates each turn — helps it remember names, events, and details over long sessions.",
         "cyoa": "Choose-Your-Own-Adventure panel with 4 suggested actions for you to pick from each turn.",
         "mvu": "Add MVU Compatibility still in test read more here: <a href='https://github.com/KritBlade/MVU_Game_Maker' target='_blank' style='color: var(--gold); text-decoration: underline;'>https://github.com/KritBlade/MVU_Game_Maker</a>",
-        "fatbody": "Injects Fatbody D&D Framework mechanics (dice rolls, combat, saving throws, XP, loot, leveling). Works alongside the Fatbody extension — enable Suite Mode there so it doesn't overwrite this preset's main prompt. Can be used together with MVU.",
+        "fatbody": "Injects Fatbody D&D Framework mechanics (dice rolls, combat, saving throws, XP, loot, leveling). If the Fatbody extension is installed and enabled, this pulls its LIVE rules automatically — no manual syncing, and it won't double up with Fatbody's own injection when Suite Mode is on there. Falls back to a bundled static ruleset if Fatbody isn't installed. Can be used together with MVU.",
         "npc_inner_chatter": "Reveal NPC private thoughts the PC never hears — crushes, resentment, scheming, anxiety. This feeds future NPC behavior.",
         "npc_inner_chatter_v2": "A simpler version of NPC Inner Chatter. use less input token."
     };
@@ -1510,6 +1510,9 @@ function renderBlocks(c) {
                 }
             }
             saveProfileToMemory(); switchTab(currentTab);
+            // Nudge Fatbody to re-evaluate its live-pull cache/suppression right away
+            // instead of waiting for one of Fatbody's own triggers to catch up.
+            if (b.id === "fatbody") globalThis._rpgRefreshAdditiveSysprompt?.();
         }); grid.append(card);
     });
 
@@ -4582,6 +4585,22 @@ function parseCountRange(raw) {
     return n ? s : null;
 }
 
+/**
+ * Live-pulls Fatbody's current additive rules if the Fatbody extension exposes
+ * the API (respects Fatbody's own module toggles and campaign mode); falls
+ * back to the bundled static snapshot otherwise (Fatbody absent, too old, or
+ * the live pull came back empty).
+ */
+function resolveFatbodyBlockContent() {
+    try {
+        if (typeof globalThis._rpgGetAdditiveSysprompt === 'function') {
+            const live = globalThis._rpgGetAdditiveSysprompt();
+            if (typeof live === 'string' && live.trim() !== '') return live;
+        }
+    } catch (_) { /* fall through to the static snapshot */ }
+    return hardcodedLogic.blocks.find(b => b.id === "fatbody").content;
+}
+
 function buildBaseDict() {
     const dict = {};
     if (!localProfile) return dict;
@@ -4684,9 +4703,10 @@ function buildBaseDict() {
     }
 
     // Fatbody D&D Logic — injects the Fatbody DnD Framework mechanics (dice, combat, XP, loot).
-    // Independent of MVU; both can be enabled at once.
+    // Independent of MVU; both can be enabled at once. Pulls Fatbody's live rules when
+    // the Fatbody extension is installed and exposes them; see resolveFatbodyBlockContent().
     if (localProfile.blocks.includes("fatbody")) {
-        dict["[[FATBODY]]"] = hardcodedLogic.blocks.find(b => b.id === "fatbody").content;
+        dict["[[FATBODY]]"] = resolveFatbodyBlockContent();
     } else {
         dict["[[FATBODY]]"] = "";
     }

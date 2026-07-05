@@ -666,6 +666,10 @@ export const hardcodedLogic = {
       content: "<StoryAnalysis>...</StoryAnalysis>\n<combat_calculation>...</combat_calculation>\n<gametxt>[[count]]</gametxt>\n<combat_log>...</combat_log>\n<location>...</location>\n<UpdateVariable>...</UpdateVariable>"
     },
     {
+      // Fallback-only: used when the Fatbody extension isn't installed, is too old to
+      // expose globalThis._rpgGetAdditiveSysprompt(), or the live pull comes back empty.
+      // When Fatbody IS present, index.js's resolveFatbodyBlockContent() pulls its
+      // current rules live instead of this static snapshot — see buildBaseDict().
       id: "fatbody",
       label: "Fatbody D&D",
       trigger: "[[FATBODY]]",
