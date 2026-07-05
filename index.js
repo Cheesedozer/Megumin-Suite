@@ -1452,7 +1452,7 @@ function renderBlocks(c) {
         "summary": "Keeps a running story digest that the AI updates each turn — helps it remember names, events, and details over long sessions.",
         "cyoa": "Choose-Your-Own-Adventure panel with 4 suggested actions for you to pick from each turn.",
         "mvu": "Add MVU Compatibility still in test read more here: <a href='https://github.com/KritBlade/MVU_Game_Maker' target='_blank' style='color: var(--gold); text-decoration: underline;'>https://github.com/KritBlade/MVU_Game_Maker</a>",
-        "fatbody": "Injects Fatbody D&D Framework mechanics (dice rolls, combat, saving throws, XP, loot, leveling). If the Fatbody extension is installed and enabled, this pulls its LIVE rules automatically — no manual syncing, and it won't double up with Fatbody's own injection when Suite Mode is on there. Falls back to a bundled static ruleset if Fatbody isn't installed. Can be used together with MVU.",
+        "fatbody": "Injects Fatbody D&D Framework mechanics (dice rolls, combat, saving throws, XP, loot, leveling) by pulling Fatbody's LIVE rules — no manual syncing, and it won't double up with Fatbody's own injection when Suite Mode is on there. Requires the Fatbody extension to be installed and enabled: its mechanics come from Fatbody's own code (RNG queue, the RollTheDice tool, state tracking), not prompt text, so there's no standalone fallback — without Fatbody, this block injects nothing. Can be used together with MVU.",
         "npc_inner_chatter": "Reveal NPC private thoughts the PC never hears — crushes, resentment, scheming, anxiety. This feeds future NPC behavior.",
         "npc_inner_chatter_v2": "A simpler version of NPC Inner Chatter. use less input token."
     };
@@ -4587,9 +4587,11 @@ function parseCountRange(raw) {
 
 /**
  * Live-pulls Fatbody's current additive rules if the Fatbody extension exposes
- * the API (respects Fatbody's own module toggles and campaign mode); falls
- * back to the bundled static snapshot otherwise (Fatbody absent, too old, or
- * the live pull came back empty).
+ * the API (respects Fatbody's own module toggles and campaign mode). Returns
+ * '' if Fatbody isn't installed, is too old to expose the API, or the pull
+ * comes back empty — there's no static fallback: Fatbody's mechanics (RNG
+ * queue injection, the RollTheDice tool, state tracking) come from its own
+ * runtime, not prompt text, so a frozen copy can't function standalone.
  */
 function resolveFatbodyBlockContent() {
     try {
@@ -4597,8 +4599,8 @@ function resolveFatbodyBlockContent() {
             const live = globalThis._rpgGetAdditiveSysprompt();
             if (typeof live === 'string' && live.trim() !== '') return live;
         }
-    } catch (_) { /* fall through to the static snapshot */ }
-    return hardcodedLogic.blocks.find(b => b.id === "fatbody").content;
+    } catch (_) { /* Fatbody not installed/too old to expose the API */ }
+    return '';
 }
 
 function buildBaseDict() {
