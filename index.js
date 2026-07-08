@@ -142,8 +142,10 @@ function initProfile() {
         blocks: [],
         model: "cot-v1-english",
         userNotes: "",
+        userLengthMode: "paragraphs",
         userParagraphCount: "",
         userSentencesPerParagraph: "",
+        userWordCount: "",
         userLanguage: "",
         userPronouns: "off",
         devOverrides: {},
@@ -506,7 +508,7 @@ function applyTabToAll() {
         0: ["mode"],
         1: ["personality", "toggles"],
         2: ["activeStyleId", "aiRule", "customStyles", "dnRatio"],
-        3: ["userParagraphCount", "userSentencesPerParagraph", "userLanguage", "userPronouns", "disableUtilityPrefill", "onomatopoeia"],
+        3: ["userLengthMode", "userParagraphCount", "userSentencesPerParagraph", "userWordCount", "userLanguage", "userPronouns", "disableUtilityPrefill", "onomatopoeia"],
         4: ["addons", "blocks"],
         5: ["model"],
         6: ["storyPlan"],
@@ -1401,6 +1403,19 @@ function renderAddons(c) {
                 <div class="ps-switch"></div>
             </div>
             <div class="mtab-setting-row">
+                <div class="set-info"><div class="set-label">Control Length By</div><div class="set-desc">Both compile to the same paragraph-based instruction — pick whichever unit you think in.</div></div>
+                <select id="ps_select_lengthmode" class="ps-modern-input" style="width: 180px; cursor: pointer;">
+                    <option value="paragraphs" ${localProfile.userLengthMode !== 'words' ? 'selected' : ''}>Paragraphs</option>
+                    <option value="words" ${localProfile.userLengthMode === 'words' ? 'selected' : ''}>Words</option>
+                </select>
+            </div>
+            ${localProfile.userLengthMode === 'words' ? `
+            <div class="mtab-setting-row">
+                <div class="set-info"><div class="set-label">Target Word Count</div><div class="set-desc">Leave empty for no limit. Accepts a single number or a range, e.g. 200-300. Converted to a paragraph/sentence instruction under the hood — LLMs can't count words reliably, but they hold structure well.</div></div>
+                <input type="text" id="ps_input_wordcount" class="ps-modern-input" style="width: 180px;" placeholder="e.g. 200-300" value="${localProfile.userWordCount || ''}" />
+            </div>
+            ` : `
+            <div class="mtab-setting-row">
                 <div class="set-info"><div class="set-label">Target Paragraphs</div><div class="set-desc">Leave empty for no limit. Accepts a single number or a range, e.g. 3-5</div></div>
                 <input type="text" id="ps_input_paragraphcount" class="ps-modern-input" style="width: 180px;" placeholder="e.g. 3-5" value="${localProfile.userParagraphCount || ''}" />
             </div>
@@ -1408,6 +1423,7 @@ function renderAddons(c) {
                 <div class="set-info"><div class="set-label">Sentences per Paragraph</div><div class="set-desc">Optional. Anchors paragraph length, e.g. 3-5</div></div>
                 <input type="text" id="ps_input_sentencecount" class="ps-modern-input" style="width: 180px;" placeholder="e.g. 3-5" value="${localProfile.userSentencesPerParagraph || ''}" />
             </div>
+            `}
             <div class="mtab-setting-row">
                 <div class="set-info"><div class="set-label">Language Output</div><div class="set-desc">Leave empty for default (English)</div></div>
                 <input type="text" id="ps_input_language" class="ps-modern-input" style="width: 180px;" placeholder="e.g. Arabic, French…" value="${localProfile.userLanguage || ''}" />
@@ -1439,8 +1455,14 @@ function renderAddons(c) {
         if (localProfile.disableUtilityPrefill) $(this).addClass("active");
         else $(this).removeClass("active");
     });
+    $("#ps_select_lengthmode").on("change", function () {
+        localProfile.userLengthMode = $(this).val();
+        saveProfileToMemory();
+        switchTab(currentTab);
+    });
     $("#ps_input_paragraphcount").on("input", function () { localProfile.userParagraphCount = $(this).val(); saveProfileToMemory(); });
     $("#ps_input_sentencecount").on("input", function () { localProfile.userSentencesPerParagraph = $(this).val(); saveProfileToMemory(); });
+    $("#ps_input_wordcount").on("input", function () { localProfile.userWordCount = $(this).val(); saveProfileToMemory(); });
     $("#ps_input_language").on("input", function () { localProfile.userLanguage = $(this).val(); saveProfileToMemory(); });
     $("#ps_select_pronouns").on("change", function () { localProfile.userPronouns = $(this).val(); saveProfileToMemory(); });
 }
@@ -4573,16 +4595,37 @@ $("body").on("input", "#ps_main_current_rule", function () {
 // -------------------------------------------------------------
 // EVENT LISTENERS & INITS
 // -------------------------------------------------------------
-function parseCountRange(raw) {
+function parseRange(raw) {
     const s = (raw || "").trim();
     if (!s) return null;
     const m = s.match(/^(\d+)\s*-\s*(\d+)$/);
     if (m) {
         const lo = Math.min(+m[1], +m[2]), hi = Math.max(+m[1], +m[2]);
-        return lo === hi ? `${lo}` : `${lo}–${hi}`;
+        return { lo, hi };
     }
-    const n = s.match(/^\d+$/);
-    return n ? s : null;
+    const n = s.match(/^(\d+)$/);
+    return n ? { lo: +n[1], hi: +n[1] } : null;
+}
+
+function formatRange(range) {
+    if (!range) return null;
+    return range.lo === range.hi ? `${range.lo}` : `${range.lo}–${range.hi}`;
+}
+
+function parseCountRange(raw) {
+    return formatRange(parseRange(raw));
+}
+
+// Rough heuristic used only to translate a user-facing word target into the
+// paragraph/sentence phrasing the model actually follows reliably — LLMs
+// have no internal word counter, but they track structural breaks well.
+// ~4 sentences/paragraph x ~18 words/sentence.
+const WORDS_PER_PARAGRAPH_ESTIMATE = 75;
+
+function wordsRangeToParagraphRange(wordRange) {
+    const lo = Math.max(1, Math.round(wordRange.lo / WORDS_PER_PARAGRAPH_ESTIMATE));
+    const hi = Math.max(lo, Math.round(wordRange.hi / WORDS_PER_PARAGRAPH_ESTIMATE));
+    return { lo, hi };
 }
 
 /**
@@ -4616,13 +4659,20 @@ function buildBaseDict() {
     if (localProfile.userPronouns === "male") dict["[[pronouns]]"] = `{{user}} is male. Always portray and address him as such.`;
     else if (localProfile.userPronouns === "female") dict["[[pronouns]]"] = `{{user}} is female. Always portray and address her as such.`;
 
-    const paragraphPhrase = parseCountRange(localProfile.userParagraphCount);
-    const sentencePhrase = parseCountRange(localProfile.userSentencesPerParagraph);
-
     let countStr = null;
-    if (paragraphPhrase) {
-        countStr = `approximately ${paragraphPhrase} paragraphs`;
-        if (sentencePhrase) countStr += ` of ${sentencePhrase} sentences each`;
+    if (localProfile.userLengthMode === "words") {
+        const wordRange = parseRange(localProfile.userWordCount);
+        if (wordRange) {
+            const paragraphRange = wordsRangeToParagraphRange(wordRange);
+            countStr = `approximately ${formatRange(paragraphRange)} paragraphs of 3–5 sentences each (~${formatRange(wordRange)} words total)`;
+        }
+    } else {
+        const paragraphPhrase = parseCountRange(localProfile.userParagraphCount);
+        const sentencePhrase = parseCountRange(localProfile.userSentencesPerParagraph);
+        if (paragraphPhrase) {
+            countStr = `approximately ${paragraphPhrase} paragraphs`;
+            if (sentencePhrase) countStr += ` of ${sentencePhrase} sentences each`;
+        }
     }
 
     dict["[[count]]"] = countStr ? `— ${countStr}` : "";
